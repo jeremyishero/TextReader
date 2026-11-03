@@ -1,0 +1,36 @@
+name: iOS Build & CoreLogic Tests
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -scheme TextReader \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -derivedDataPath build \
+            | xcpretty || xcodebuild build -scheme TextReader -destination 'generic/platform=iOS Simulator' -derivedDataPath build
+
+      - name: CoreLogic unit tests (logic: gender / coreference / emotion / docx)
+        run: |
+          cd Packages/CoreLogic
+          swift test

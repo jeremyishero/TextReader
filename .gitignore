@@ -1,0 +1,7 @@
+# Xcode / SwiftPM
+build/
+DerivedData/
+*.xcodeproj
+*.xcuserdata/
+.swiftpm/
+Packages/**/.build/

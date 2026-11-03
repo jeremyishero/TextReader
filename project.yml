@@ -1,0 +1,34 @@
+name: TextReader
+options:
+  bundleIdPrefix: com.example.textreader
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+packages:
+  CoreLogic:
+    path: Packages/CoreLogic
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: 0.9.19
+targets:
+  TextReader:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        excludes:
+          - Packages
+          - .github
+          - README.md
+          - Info.plist
+    dependencies:
+      - package: CoreLogic
+      - package: ZIPFoundation
+    infoPlist:
+      path: Info.plist
+    settings:
+      base:
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_BITCODE: "NO"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
