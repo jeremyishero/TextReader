@@ -76,10 +76,11 @@ final class CoreLogicTests: XCTestCase {
 
     func testDocxExtraction() throws {
         // 用 ZIPFoundation 构造一个最小 docx，验证 DocxParser
-        let tmp = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("docx")
-        var archive = try Archive(url: tmp, accessMode: .create)
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let docDir = base.appendingPathComponent("word", isDirectory: true)
+        try FileManager.default.createDirectory(at: docDir, withIntermediateDirectories: true)
+        let tmp = base.appendingPathExtension("docx")
         let xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -89,7 +90,9 @@ final class CoreLogicTests: XCTestCase {
           </w:body>
         </w:document>
         """
-        try archive.addEntry(with: "word/document.xml", data: Data(xml.utf8))
+        try Data(xml.utf8).write(to: docDir.appendingPathComponent("document.xml"))
+        var archive = try Archive(url: tmp, accessMode: .create)
+        try archive.addEntry(with: "word/document.xml", relativeTo: base)
 
         let text = DocxParser().extractText(from: tmp)
         XCTAssertNotNil(text, "docx 应能被解析")
