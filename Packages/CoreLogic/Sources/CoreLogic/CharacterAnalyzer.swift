@@ -274,10 +274,26 @@ public struct CharacterAnalyzer {
         return cleanCapturedName(name)
     }
 
+    /// 扫描误报黑名单（姓氏+常用词组合，如「郁郁」叠词、「英雄」等）
+    static let nameStopwords: Set<String> = [
+        "英雄", "神情", "突然", "但是", "可是", "然后", "已经", "因为", "所以", "现在",
+        "这时", "自己", "他们", "她们", "我们", "你们", "什么", "怎么", "大家", "众人",
+        "一声", "微微", "缓缓", "默默", "渐渐", "轻轻", "慢慢", "郁郁", "悠悠",
+        "匆匆", "立刻", "马上", "于是", "只是", "就是", "还是", "也是", "又是"
+    ]
+
     /// 在旁白里扫描「常见姓氏 + 1 字」的 2 字姓名候选，用于建立角色与场景上下文。
     private func extractNarrationNames(_ text: String) -> [String] {
+        // 先剔除章节标记，避免「第一章」被拆成人名
+        var cleaned = text
+        if let re = try? NSRegularExpression(pattern: "第[一二三四五六七八九十百千0-9]+[章回卷]") {
+            cleaned = re.stringByReplacingMatches(
+                in: text,
+                range: NSRange(location: 0, length: (text as NSString).length),
+                withTemplate: "")
+        }
         var out: [String] = []
-        let chars = Array(text)
+        let chars = Array(cleaned)
         guard chars.count >= 2 else { return out }
         var i = 0
         while i < chars.count - 1 {
@@ -288,8 +304,13 @@ public struct CharacterAnalyzer {
                     i += 3
                     continue
                 }
-                let candidate = String(chars[i...i + 1])
-                if !out.contains(candidate) {
+                let second = chars[i + 1]
+                // 第二字必须是汉字（排除空格/标点），不能与首字叠用（郁郁/悠悠），不落在黑名单
+                let isHan = second.unicodeScalars.first.map {
+                    (0x4E00...0x9FFF).contains($0.value) || (0x3400...0x4DBF).contains($0.value)
+                } == true
+                let candidate = String([chars[i], second])
+                if isHan, chars[i] != second, !Self.nameStopwords.contains(candidate), !out.contains(candidate) {
                     out.append(candidate)
                 }
             }
