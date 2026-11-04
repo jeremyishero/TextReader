@@ -32,3 +32,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_BITCODE: "NO"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        # 侧载兼容：把 Swift 运行库打包进 App，避免依赖手机系统的新版 dylib（低版本 iOS 秒闪退）
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: "YES"
+        EMBEDDED_CONTENT_CONTAINS_SWIFT: "YES"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
