@@ -61,6 +61,9 @@ public struct CharacterAnalyzer {
         "那女子": .female, "那丫头": .female, "这丫头": .female, "那小姐": .female, "那妇人": .female, "这女子": .female, "那姑娘": .female
     ]
 
+    /// 捕获名尾部的修饰字/说话动词（用于剥离「林浩笑道→林浩笑」类噪声）
+    static let tailNoise = "微轻低高厉冷沉急忙连便就又再一了着说道曰问答喊叫笑怒叹哭应回劝禀奏言吟呼喝骂斥吼叱瞪咬牙"
+
     public init() {}
 
     // MARK: 主入口
@@ -134,13 +137,31 @@ public struct CharacterAnalyzer {
                 return sceneRecent.last(where: { roleGender($0) == .male }) ?? sceneRecent.last
             }
         }
+        /// 说话人兜底：在引语前的短窗口内找已知角色名/别名、描述词或代词，返回最后出现者。
+        func fallbackSpeaker(in preceding: String) -> String? {
+            let tail = String(preceding.suffix(min(preceding.count, 24)))
+            var best: (pos: Int, name: String)? = nil
+            func consider(_ name: String) {
+                guard !name.isEmpty, let r = tail.range(of: name, options: .backwards) else { return }
+                let pos = tail.distance(from: tail.startIndex, to: r.lowerBound)
+                if best == nil || pos >= best!.pos { best = (pos, name) }
+            }
+            for role in roles {
+                consider(role.canonicalName)
+                for a in role.aliases { consider(a) }
+            }
+            for k in descriptorGender.keys { consider(k) }
+            consider("她")
+            consider("他")
+            return best?.name
+        }
 
         for unit in units {
             switch unit {
             case .narration(let t):
                 if isChapterMarker(t) { sceneRecent.removeAll() }
-                // 在旁白中登记被提及（带说话提示）的角色，建立场景上下文
-                for name in extractNamesWithCue(t) {
+                // 在旁白中用「姓氏+1字」扫描登记人物，建立场景上下文
+                for name in extractNarrationNames(t) {
                     let id = registerOrMerge(surface: name)
                     ensureSceneRecent(id)
                 }
@@ -150,7 +171,12 @@ public struct CharacterAnalyzer {
             case .dialogue(let quote, let preceding):
                 let emotion = EmotionLexicon.detect(before: preceding, quote: quote)
                 var speakerId: String? = nil
-                if let raw = resolveSpeaker(preceding) {
+                var raw = resolveSpeaker(preceding)
+                if raw == nil {
+                    // 兜底：在引语前的短窗口内找已知角色名 / 描述词 / 代词（取最后出现者）
+                    raw = fallbackSpeaker(in: preceding)
+                }
+                if let raw {
                     if raw == "他" || raw == "她" {
                         if let id = resolvePronoun(raw) {
                             addAlias(raw, to: id)
@@ -194,6 +220,10 @@ public struct CharacterAnalyzer {
             let c = text[i]
             if let close = open[c] {
                 let preceding = buffer
+                // 引语前的叙述文本独立成段（旁白），同时作为对话的说话人上下文
+                if !buffer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    units.append(.narration(buffer))
+                }
                 buffer = ""
                 var j = text.index(after: i)
                 var quote = ""
@@ -215,7 +245,23 @@ public struct CharacterAnalyzer {
 
     // MARK: 说话人解析
 
-    /// 从引语前的叙述里找最近一次「X + 说话提示」，返回 X（已去称谓）。
+    /// 捕获名清洗：反复剥离尾部的修饰字/说话动词，避免「林浩笑道」被捕获成「林浩笑」。
+    private func cleanCapturedName(_ raw: String) -> String? {
+        if raw == "他" || raw == "她" { return raw }
+        var r = raw
+        var changed = true
+        while changed, !r.isEmpty {
+            changed = false
+            if let last = r.last, Self.tailNoise.contains(last) {
+                r.removeLast()
+                changed = true
+            }
+        }
+        guard r.count >= 2 else { return nil }
+        return r
+    }
+
+    /// 从引语前的叙述里找最近一次「X + 说话提示」，返回 X（已清洗）。
     private func resolveSpeaker(_ preceding: String) -> String? {
         let last = String(preceding.suffix(min(preceding.count, 40)))
         let pattern = "([\\u4e00-\\u9fa5]{1,4})(?:\(speechCues))"
@@ -225,24 +271,31 @@ public struct CharacterAnalyzer {
         let results = re.matches(in: last, range: range)
         guard let lastMatch = results.last, lastMatch.numberOfRanges > 1 else { return nil }
         let name = ns.substring(with: lastMatch.range(at: 1))
-        // 保留原始称呼（如「林兄」「苏姑娘」），归一化由 registerOrMerge/resolveAlias 处理，
-        // 以保证别名（林兄、那少年）能正确并入对应角色。
-        return name.isEmpty ? nil : name
+        return cleanCapturedName(name)
     }
 
-    /// 在旁白里提取所有「X + 说话提示」的 X，用于建立角色与场景上下文。
-    private func extractNamesWithCue(_ text: String) -> [String] {
-        let pattern = "([\\u4e00-\\u9fa5]{1,4})(?:\(speechCues))"
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let ns = text as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        let results = re.matches(in: text, range: range)
-        return results.compactMap { m -> String? in
-            guard m.numberOfRanges > 1 else { return nil }
-            let name = ns.substring(with: m.range(at: 1))
-            let n = normalizeName(name)
-            return n.isEmpty ? nil : n
+    /// 在旁白里扫描「常见姓氏 + 1 字」的 2 字姓名候选，用于建立角色与场景上下文。
+    private func extractNarrationNames(_ text: String) -> [String] {
+        var out: [String] = []
+        let chars = Array(text)
+        guard chars.count >= 2 else { return out }
+        var i = 0
+        while i < chars.count - 1 {
+            if GenderLexicon.isLikelySurname(chars[i]) {
+                // 姓氏 + 2 字若构成已知描述词（如「那少年」），跳过该姓氏，避免误注册
+                let three = String(chars[i...min(i + 2, chars.count - 1)])
+                if descriptorGender.keys.contains(three) {
+                    i += 3
+                    continue
+                }
+                let candidate = String(chars[i...i + 1])
+                if !out.contains(candidate) {
+                    out.append(candidate)
+                }
+            }
+            i += 1
         }
+        return out
     }
 
     /// 去姓名前后称谓/敬语，得到基名（林风兄→林风，老林→林）。
