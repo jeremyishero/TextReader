@@ -10,7 +10,8 @@ public struct DocxParser {
 
     /// 提取 docx 文本；失败返回 nil。
     public func extractText(from url: URL) -> String? {
-        guard let archive = Archive(url: url, accessMode: .read) else { return nil }
+        let archive: Archive
+        do { archive = try Archive(url: url, accessMode: .read) } catch { return nil }
 
         var target: Entry?
         for entry in archive where entry.path.hasSuffix("document.xml") {

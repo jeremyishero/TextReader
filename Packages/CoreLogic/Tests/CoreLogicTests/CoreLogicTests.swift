@@ -79,7 +79,7 @@ final class CoreLogicTests: XCTestCase {
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension("docx")
-        var archive = Archive(url: tmp, accessMode: .create)
+        var archive = try Archive(url: tmp, accessMode: .create)
         let xml = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -89,7 +89,7 @@ final class CoreLogicTests: XCTestCase {
           </w:body>
         </w:document>
         """
-        try archive?.addEntry(with: "word/document.xml", data: Data(xml.utf8))
+        try archive.addEntry(with: "word/document.xml", data: Data(xml.utf8))
 
         let text = DocxParser().extractText(from: tmp)
         XCTAssertNotNil(text, "docx 应能被解析")
