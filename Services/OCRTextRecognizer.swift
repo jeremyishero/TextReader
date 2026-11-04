@@ -11,8 +11,8 @@ enum OCRTextRecognizer {
         // 约 300 DPI 渲染，兼顾精度与内存
         let scale: CGFloat = 300.0 / 72.0
         let target = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        guard let image = page.thumbnail(of: target, for: .mediaBox),
-              let cgImage = image.cgImage else { return nil }
+        let image = page.thumbnail(of: target, for: .mediaBox)
+        guard let cgImage = image.cgImage else { return nil }
 
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate

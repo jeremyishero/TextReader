@@ -52,11 +52,17 @@ struct PlayerBar: View {
 
     /// 简体/繁体/英文三语声音映射（v1 由用户在设置页手动选声）
     private func languageVoices(defaultVoice: AVSpeechSynthesisVoice?) -> [ScriptLanguage: AVSpeechSynthesisVoice] {
-        [
-            .zhHans: resolveVoice(settings.voiceZhHans) ?? defaultVoice ?? TTSPlayer.pickVoice(language: "zh-CN"),
-            .zhHant: resolveVoice(settings.voiceZhHant) ?? TTSPlayer.pickVoice(language: "zh-TW"),
-            .english: resolveVoice(settings.voiceEn) ?? TTSPlayer.pickVoice(language: "en-US")
-        ]
+        var map: [ScriptLanguage: AVSpeechSynthesisVoice] = [:]
+        if let v = resolveVoice(settings.voiceZhHans) ?? defaultVoice ?? TTSPlayer.pickVoice(language: "zh-CN") {
+            map[.zhHans] = v
+        }
+        if let v = resolveVoice(settings.voiceZhHant) ?? TTSPlayer.pickVoice(language: "zh-TW") {
+            map[.zhHant] = v
+        }
+        if let v = resolveVoice(settings.voiceEn) ?? TTSPlayer.pickVoice(language: "en-US") {
+            map[.english] = v
+        }
+        return map
     }
 
     private var cloudEnabled: Bool {
