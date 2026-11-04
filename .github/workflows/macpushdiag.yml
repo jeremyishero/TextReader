@@ -1,0 +1,10 @@
+name: macpushdiag
+on:
+  push:
+    branches: [ main ]
+jobs:
+  p:
+    runs-on: macos-latest
+    steps:
+      - name: echo
+        run: echo mac-pushed-ok
