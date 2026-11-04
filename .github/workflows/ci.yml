@@ -30,7 +30,7 @@ jobs:
             -derivedDataPath build \
             | xcpretty || xcodebuild build -scheme TextReader -destination 'generic/platform=iOS Simulator' -derivedDataPath build
 
-      - name: CoreLogic unit tests (logic: gender / coreference / emotion / docx)
+      - name: CoreLogic unit tests
         run: |
           cd Packages/CoreLogic
           swift test
