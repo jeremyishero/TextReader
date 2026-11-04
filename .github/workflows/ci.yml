@@ -1,4 +1,4 @@
-name: iOS Build & CoreLogic Tests
+name: iOS Build and CoreLogic Tests
 
 on:
   push:
