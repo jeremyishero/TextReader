@@ -89,6 +89,7 @@ public struct GenderLexicon {
     /// 从含关系词文本中提取性别提示。
     public static func relationGender(_ text: String) -> Gender? {
         for (k, v) in relationHints where text.contains(k) { return v }
+        return nil
     }
 
     /// 取名字首字判断是否为常见姓氏（软校验，用于过滤非姓名 token）。
