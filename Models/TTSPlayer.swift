@@ -83,7 +83,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func pause() {
-        if useCloud { audioPlayer?.pause() } else { synth.pauseSpeaking(at: .wordBoundary) }
+        if useCloud { audioPlayer?.pause() } else { synth.pauseSpeaking(at: .word) }
         isPlaying = false
     }
 
