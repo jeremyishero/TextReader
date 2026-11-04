@@ -1,3 +1,14 @@
 name: diag
-on:/n  workflow_dispatch:/njobs:/n  t:/n    runs-on: ubuntu-latest
-    steps:/n      - run: echo ok
+on:
+  workflow_dispatch:
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - name: hello
+        run: echo ok
+  m:
+    runs-on: macos-latest
+    steps:
+      - name: hello-mac
+        run: echo mac-ok
