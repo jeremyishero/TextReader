@@ -99,7 +99,7 @@ final class DocumentStore: ObservableObject {
                 // 无文本层 → OCR
                 if let ocrText = OCRTextRecognizer.recognize(page: page) {
                     out += ocrText + "\n"
-                    ocr = true
+                    ocrUsed = true
                 }
             } else {
                 out += s + "\n"
