@@ -6,7 +6,7 @@ public struct TextChunker {
     public init() {}
 
     /// 段落末尾标记：块尾的 "\n" 由朗读器识别为段落间停顿（postUtteranceDelay）。
-    static let paragraphBreakMarker = "\n"
+    public static let paragraphBreakMarker = "\n"
 
     /// 按自然段组织：段落内按标点切句并按 maxLength 合并；**绝不跨段合并**，
     /// 段落最后一个块追加 "\n" 标记，朗读时换段有明显停顿，不会「直接接上」。
