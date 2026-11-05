@@ -67,7 +67,7 @@ public struct XlsxRoleParser {
             guard !name.isEmpty else { continue }
             let rawGender = cell(genderCol)
             let gender: Gender = rawGender.contains("女") ? .female : (rawGender.contains("男") ? .male : .neutral)
-            let note = noteCol >= 0 ? cell(noteCol) : nil
+            let note: String = noteCol >= 0 ? cell(noteCol) : ""
             let aliases = Self.parseAliases(cell(aliasCol))
             roles.append(XlsxImportedRole(name: name, aliases: aliases, gender: gender, note: note.isEmpty ? nil : note))
         }
@@ -82,7 +82,7 @@ public struct XlsxRoleParser {
         var out: [String] = []
         for part in raw.split(whereSeparator: { "、，,/;； ".contains($0) }) {
             // 剥掉括号备注
-            var a = part
+            var a = String(part)
             if let re = try? NSRegularExpression(pattern: "（[^）]*）|\\([^)]*\\)") {
                 a = re.stringByReplacingMatches(in: a, range: NSRange(location: 0, length: (a as NSString).length), withTemplate: "")
             }
