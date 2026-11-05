@@ -335,7 +335,32 @@ public struct CharacterAnalyzer {
             if let best { roles[i].canonicalName = best }
         }
 
-        return AnalysisResult(roles: roles, segments: segments)
+        // ---- 后处理：段落停顿。旁白/台词分段可能跨多个自然段（segmentText 的缓冲区跨行累积），
+        // 不拆开就出现「作者：长烟」直接连读「诈死后」的情况。按行拆为独立分段，
+        // 非末行行尾追加段落停顿标记（TextChunker.paragraphBreakMarker），朗读器据此插入停顿。
+        var finalSegments: [SpeechSegment] = []
+        var pos = 0
+        for seg in segments {
+            let lines = seg.text
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if lines.count <= 1 {
+                finalSegments.append(SpeechSegment(id: "seg_\(pos)", text: seg.text,
+                                                   characterId: seg.characterId, emotion: seg.emotion, position: pos))
+                pos += 1
+            } else {
+                for (li, line) in lines.enumerated() {
+                    var lineText = line
+                    if li < lines.count - 1 { lineText += TextChunker.paragraphBreakMarker }
+                    finalSegments.append(SpeechSegment(id: "seg_\(pos)", text: lineText,
+                                                       characterId: seg.characterId, emotion: seg.emotion, position: pos))
+                    pos += 1
+                }
+            }
+        }
+
+        return AnalysisResult(roles: roles, segments: finalSegments)
     }
 
     // MARK: 文本切分

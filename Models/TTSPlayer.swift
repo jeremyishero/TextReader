@@ -2,6 +2,14 @@ import Foundation
 import AVFoundation
 import CoreLogic
 
+/// 自定义朗读规则（每文档最多 20 条）：朗读前把「匹配文本」替换为「替换文本」。
+/// 例：匹配「……」替换为「……无语」→ 人物说话出现省略号时会多读一句「无语」。
+struct CustomRule: Codable, Identifiable, Equatable {
+    var find: String
+    var replace: String
+    var id: String { find }
+}
+
 /// 朗读控制器：封装 AVSpeechSynthesizer + 云端 TTS 备选通道。
 /// - 支持「未解析」模式（直接按句朗读）与「角色分声」模式（按分析结果朗读）。
 /// - 角色用各自声音；情绪通过 rate/pitchMultiplier/volume 表达；旁白用中性默认声。
@@ -41,6 +49,19 @@ final class TTSPlayer: NSObject, ObservableObject {
     var cloudProvider: ((String) async -> Data?)?
     private var useCloud = false
     private var audioPlayer: AVAudioPlayer?
+
+    /// 自定义朗读规则（由 ReadingView 按文档注入；本地/云端朗读前统一应用）
+    var customRules: [CustomRule] = []
+
+    /// 依次应用自定义规则：匹配文本 → 替换文本
+    private func applyCustomRules(_ text: String) -> String {
+        guard !customRules.isEmpty else { return text }
+        var out = text
+        for rule in customRules where !rule.find.isEmpty {
+            out = out.replacingOccurrences(of: rule.find, with: rule.replace)
+        }
+        return out
+    }
 
     private enum PlayMode { case plain, segments }
 
@@ -177,7 +198,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     private func speakCurrent() {
-        guard let text = currentText() else { finish(); return }
+        guard let raw = currentText() else { finish(); return }
+        let text = applyCustomRules(raw)
         currentSegmentIndex = currentIndex
         nowSpeakingText = text
         onIndexChange?(currentIndex, mode == .segments)

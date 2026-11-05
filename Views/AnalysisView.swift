@@ -3,37 +3,54 @@ import AVFoundation
 import CoreLogic
 
 /// 展示「整体解析」结果。
-/// 左侧固定三个目录按钮（滚动不受影响，可随时展开/折叠，默认折叠）：
-/// - 角色：识别出的角色列表，右侧可改名/删除；前 10 个角色可单独选择声音（≤系统可用声音数）；
+/// 左侧固定四个目录按钮（滚动不受影响；默认展开「角色」，点一下收起/展开）：
+/// - 角色：角色列表（分页展示，每页 10 个，避免角色过多时卡顿），右侧可改名/删除（删除需确认）；
+///         前 10 个角色可单独选择声音（≤系统可用声音数）；可导入其他文档的人物声音配置；
 /// - 黑名单：这些词永远不会被识别为人名；
-/// - 白名单：这些词一定是人名/称呼（出现即注册）。
+/// - 白名单：这些词一定是人名/称呼（出现即注册）；
+/// - 规则：自定义朗读规则（≤20 条），朗读时把「匹配文本」替换为「替换文本」。
 /// 黑/白名单添加时查重：已存在于另一名单则提示「覆盖」或「取消」。
-/// 可从其他文档导入人物声音配置（按角色称呼匹配，只影响本文档，不影响导入源）。
 struct AnalysisView: View {
     @Binding var analysis: AnalysisResult
     var blacklisted: [String]
     var whitelisted: [String]
     var voiceOverrides: [String: String]
     var otherDocuments: [DocumentItem]
+    var rules: [CustomRule]
     var onEdited: (() -> Void)? = nil
     var onListsChanged: (([String], [String]) -> Void)? = nil
     var onVoiceChanged: (([String: String]) -> Void)? = nil
     var onImportConfig: ((DocumentItem) -> Void)? = nil
+    var onRulesChanged: (([CustomRule]) -> Void)? = nil
 
-    private enum Panel { case roles, blacklist, whitelist }
+    private enum Panel { case roles, blacklist, whitelist, rules }
 
-    @State private var activePanel: Panel? = nil          // nil = 全部折叠
+    @State private var activePanel: Panel? = .roles      // 默认展开「角色」
+    @State private var visibleRoleCount = 10              // 角色分页：每页 10 个
     @State private var renamingRole: CharacterRole?
     @State private var renameText: String = ""
     @State private var showRenameAlert = false
     @State private var newBlackWord = ""
     @State private var newWhiteWord = ""
     @State private var showImportSheet = false
+    // 删除确认
+    @State private var showDeleteConfirm = false
+    @State private var deleteTarget: DeleteTarget? = nil
     // 查重提示
     @State private var dupWord = ""
     @State private var dupFromList: Panel = .blacklist
     @State private var dupTargetList: Panel = .whitelist
     @State private var showDupAlert = false
+    // 规则编辑
+    @State private var showRuleAlert = false
+    @State private var ruleFindDraft = ""
+    @State private var ruleReplaceDraft = ""
+    @State private var editingRuleFind: String? = nil     // nil = 新增；否则为编辑既有规则
+
+    private enum DeleteTarget {
+        case role(CharacterRole)
+        case word(String, Panel)
+    }
 
     /// 可供选择的声音：简体中文普通话优先，最多 10 个（系统有几个就有几个）
     private var voiceOptions: [AVSpeechSynthesisVoice] {
@@ -48,36 +65,28 @@ struct AnalysisView: View {
     private var assignableRoles: [CharacterRole] {
         Array(analysis.roles.prefix(10))
     }
+    /// 当前分页可见的角色
+    private var visibleRoles: [CharacterRole] {
+        Array(analysis.roles.prefix(visibleRoleCount))
+    }
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .leading) {
-                // 主内容：朗读分段预览（滚动时侧栏固定在左侧不受影响）
-                List {
-                    Section("朗读分段预览") {
-                        ForEach(Array(analysis.segments.prefix(300).enumerated()), id: \.element.id) { _, seg in
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(roleName(seg.characterId))
-                                        .font(.caption.bold())
-                                    Text(emotionLabel(seg.emotion))
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                    if seg.characterId == nil {
-                                        Text("· 中性声")
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                Text(seg.text).font(.body)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    }
+                // 主内容：提示（目录都收起时看到）
+                VStack(spacing: 8) {
+                    Spacer()
+                    Image(systemName: "sidebar.left")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text("使用左侧目录查看角色、名单与规则")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Spacer()
                 }
-                .padding(.leading, 58)
+                .frame(maxWidth: .infinity)
 
-                // 左侧固定目录栏
+                // 左侧固定目录栏 + 展开的目录面板
                 HStack(spacing: 0) {
                     sidebar
                     if activePanel != nil {
@@ -105,6 +114,20 @@ struct AnalysisView: View {
             } message: {
                 Text(dupMessage)
             }
+            .alert(editingRuleFind == nil ? "添加新规则" : "修改规则", isPresented: $showRuleAlert) {
+                TextField("匹配文本（朗读中出现）", text: $ruleFindDraft)
+                TextField("替换文本（改为朗读）", text: $ruleReplaceDraft)
+                Button("保存", action: commitRule)
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("朗读时把「匹配文本」替换为「替换文本」。例：匹配「……」替换为「……无语」，人物说话出现省略号时会多读一句「无语」。")
+            }
+            .confirmationDialog("确认删除", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+                Button("删除", role: .destructive, action: executeDelete)
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text(deleteConfirmMessage)
+            }
             .sheet(isPresented: $showImportSheet) {
                 importSheet
             }
@@ -114,10 +137,11 @@ struct AnalysisView: View {
     // MARK: 侧栏
 
     private var sidebar: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             sidebarButton(icon: "person.2.fill", label: "角色", panel: .roles)
             sidebarButton(icon: "hand.raised.fill", label: "黑名单", panel: .blacklist)
             sidebarButton(icon: "checkmark.seal.fill", label: "白名单", panel: .whitelist)
+            sidebarButton(icon: "wand.and.stars", label: "规则", panel: .rules)
             Spacer()
         }
         .frame(width: 56)
@@ -127,7 +151,6 @@ struct AnalysisView: View {
 
     private func sidebarButton(icon: String, label: String, panel: Panel) -> some View {
         Button {
-            // 再点一次当前目录 → 折叠
             activePanel = (activePanel == panel) ? nil : panel
         } label: {
             VStack(spacing: 3) {
@@ -154,10 +177,13 @@ struct AnalysisView: View {
             case .roles: rolesPanel
             case .blacklist: blacklistPanel
             case .whitelist: whitelistPanel
+            case .rules: rulesPanel
             case nil: EmptyView()
             }
         }
     }
+
+    // MARK: 角色面板（分页防卡）
 
     private var rolesPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -180,8 +206,19 @@ struct AnalysisView: View {
             if analysis.roles.isEmpty {
                 Text("未识别到明确角色，将按旁白朗读。").foregroundColor(.secondary)
             }
-            ForEach(Array(analysis.roles.enumerated()), id: \.element.id) { idx, role in
+            ForEach(Array(visibleRoles.enumerated()), id: \.element.id) { idx, role in
                 roleRow(role, index: idx)
+            }
+            // 分页加载：只渲染已展开的部分，角色再多也不卡
+            if visibleRoleCount < analysis.roles.count {
+                Button {
+                    visibleRoleCount += 10
+                } label: {
+                    Label("显示更多（还有 \(analysis.roles.count - visibleRoleCount) 个）", systemImage: "chevron.down")
+                        .font(.caption)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
         }
         .padding(12)
@@ -210,7 +247,8 @@ struct AnalysisView: View {
                 }
                 .buttonStyle(.borderless)
                 Button {
-                    deleteRole(role)
+                    deleteTarget = .role(role)
+                    showDeleteConfirm = true
                 } label: {
                     Image(systemName: "trash").font(.caption).foregroundColor(.red)
                 }
@@ -226,7 +264,7 @@ struct AnalysisView: View {
                 Picker("声音", selection: voiceBinding(for: role)) {
                     Text("自动分配").tag(String?.none)
                     ForEach(voiceOptions, id: \.identifier) { v in
-                        Text("\(v.name)（普通话）").tag(String?.some(v.identifier))
+                        Text(v.name).tag(String?.some(v.identifier))
                     }
                 }
                 .font(.caption)
@@ -235,6 +273,8 @@ struct AnalysisView: View {
         .padding(.vertical, 2)
     }
 
+    // MARK: 黑白名单面板
+
     private var blacklistPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             panelHeader("黑名单（\(blacklisted.count)）")
@@ -242,7 +282,7 @@ struct AnalysisView: View {
                 .font(.caption2).foregroundColor(.secondary)
             wordEditor(text: $newBlackWord, placeholder: "输入要屏蔽的词") { addWord(newBlackWord, to: .blacklist) }
             ForEach(blacklisted, id: \.self) { w in
-                wordRow(w) { removeWord(w, from: .blacklist) }
+                wordRow(w, list: .blacklist)
             }
         }
         .padding(12)
@@ -255,11 +295,69 @@ struct AnalysisView: View {
                 .font(.caption2).foregroundColor(.secondary)
             wordEditor(text: $newWhiteWord, placeholder: "输入一定是人名的词") { addWord(newWhiteWord, to: .whitelist) }
             ForEach(whitelisted, id: \.self) { w in
-                wordRow(w) { removeWord(w, from: .whitelist) }
+                wordRow(w, list: .whitelist)
             }
         }
         .padding(12)
     }
+
+    // MARK: 自定义规则面板（≤20 条）
+
+    private var rulesPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            panelHeader("自定义规则（\(rules.count)/20）")
+            Text("朗读时把「匹配文本」替换为「替换文本」，本地/云端朗读均生效，保存后立即应用。")
+                .font(.caption2).foregroundColor(.secondary)
+            Button {
+                ruleFindDraft = ""
+                ruleReplaceDraft = ""
+                editingRuleFind = nil
+                showRuleAlert = true
+            } label: {
+                Label("添加新规则", systemImage: "plus.circle.fill")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(rules.count >= 20)
+            if rules.count >= 20 {
+                Text("已达上限 20 条，请先删除不需要的规则。")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            ForEach(rules) { rule in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("「\(rule.find)」")
+                            .font(.caption.bold())
+                        Text("→ 朗读「\(rule.replace)」")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        ruleFindDraft = rule.find
+                        ruleReplaceDraft = rule.replace
+                        editingRuleFind = rule.find
+                        showRuleAlert = true
+                    } label: {
+                        Image(systemName: "pencil").font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    Button {
+                        deleteTarget = .rule(rule)
+                        showDeleteConfirm = true
+                    } label: {
+                        Image(systemName: "trash").font(.caption).foregroundColor(.red)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(12)
+    }
+
+    // MARK: 通用小组件
 
     private func panelHeader(_ title: String) -> some View {
         Text(title).font(.headline)
@@ -275,18 +373,59 @@ struct AnalysisView: View {
         }
     }
 
-    private func wordRow(_ word: String, onDelete: @escaping () -> Void) -> some View {
+    private func wordRow(_ word: String, list: Panel) -> some View {
         HStack {
             Text(word)
             Spacer()
             Button {
-                onDelete()
+                deleteTarget = .word(word, list)
+                showDeleteConfirm = true
             } label: {
                 Image(systemName: "trash").font(.caption).foregroundColor(.red)
             }
             .buttonStyle(.borderless)
         }
         .padding(.vertical, 2)
+    }
+
+    // MARK: 删除确认
+
+    private var deleteConfirmMessage: String {
+        switch deleteTarget {
+        case .role(let role):
+            return "删除角色「\(role.canonicalName)」后，其所有台词将改由旁白（中性声）朗读。确定删除吗？"
+        case .word(let word, let list):
+            return list == .blacklist
+                ? "从黑名单移除「\(word)」后，该词将不再被强制屏蔽。确定删除吗？"
+                : "从白名单移除「\(word)」后，该词将不再被强制识别为人名。确定删除吗？"
+        case .rule(let rule):
+            return "删除规则「\(rule.find) → \(rule.replace)」后立即生效。确定删除吗？"
+        case nil:
+            return ""
+        }
+    }
+
+    private func executeDelete() {
+        switch deleteTarget {
+        case .role(let role):
+            analysis.roles.removeAll { $0.id == role.id }
+            for i in analysis.segments.indices where analysis.segments[i].characterId == role.id {
+                analysis.segments[i].characterId = nil
+            }
+            onEdited?()
+        case .word(let word, let list):
+            if list == .blacklist {
+                onListsChanged?(blacklisted.filter { $0 != word }, whitelisted)
+            } else {
+                onListsChanged?(blacklisted, whitelisted.filter { $0 != word })
+            }
+        case .rule(let rule):
+            let updated = rules.filter { $0.id != rule.id }
+            onRulesChanged?(updated)
+        case nil:
+            break
+        }
+        deleteTarget = nil
     }
 
     // MARK: 名单操作与查重
@@ -338,7 +477,27 @@ struct AnalysisView: View {
         }
     }
 
-    // MARK: 角色操作
+    // MARK: 规则操作
+
+    private func commitRule() {
+        let find = ruleFindDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let replace = ruleReplaceDraft
+        guard !find.isEmpty else { return }
+        var updated = rules
+        if let editing = editingRuleFind, let idx = updated.firstIndex(where: { $0.id == editing }) {
+            updated[idx] = CustomRule(find: find, replace: replace)
+        } else {
+            // 同匹配文本的规则直接更新，避免重复
+            if let idx = updated.firstIndex(where: { $0.id == find }) {
+                updated[idx] = CustomRule(find: find, replace: replace)
+            } else {
+                updated.append(CustomRule(find: find, replace: replace))
+            }
+        }
+        onRulesChanged?(updated)
+    }
+
+    // MARK: 角色声音
 
     private func voiceBinding(for role: CharacterRole) -> Binding<String?> {
         Binding(
@@ -359,14 +518,6 @@ struct AnalysisView: View {
         analysis.roles[idx].canonicalName = newName
         if old != newName, !analysis.roles[idx].aliases.contains(old) {
             analysis.roles[idx].aliases.append(old)
-        }
-        onEdited?()
-    }
-
-    private func deleteRole(_ role: CharacterRole) {
-        analysis.roles.removeAll { $0.id == role.id }
-        for i in analysis.segments.indices where analysis.segments[i].characterId == role.id {
-            analysis.segments[i].characterId = nil
         }
         onEdited?()
     }
@@ -402,10 +553,6 @@ struct AnalysisView: View {
 
     // MARK: 展示辅助
 
-    private func roleName(_ id: String?) -> String {
-        guard let id else { return "旁白" }
-        return analysis.roles.first(where: { $0.id == id })?.canonicalName ?? "未知"
-    }
     private func genderLabel(_ g: Gender) -> String {
         switch g { case .male: return "男"; case .female: return "女"; case .neutral: return "中性" }
     }

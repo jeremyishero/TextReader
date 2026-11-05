@@ -184,6 +184,26 @@ func importFile(from url: URL) async throws {
         documents.filter { $0.id != documentId && fm.fileExists(atPath: voiceConfigURL($0.id).path) }
     }
 
+    // MARK: 每文档自定义朗读规则（≤20 条）
+
+    private func rulesURL(_ documentId: UUID) -> URL {
+        importsDir.appendingPathComponent("\(documentId.uuidString).rules.json")
+    }
+
+    /// 保存某文档的自定义朗读规则。
+    func saveRules(_ rules: [CustomRule], for documentId: UUID) {
+        if let data = try? JSONEncoder().encode(rules) {
+            try? data.write(to: rulesURL(documentId), options: .atomic)
+        }
+    }
+
+    /// 读取某文档的自定义朗读规则；无则返回空表。
+    func loadRules(for documentId: UUID) -> [CustomRule] {
+        guard let data = try? Data(contentsOf: rulesURL(documentId)),
+              let rules = try? JSONDecoder().decode([CustomRule].self, from: data) else { return [] }
+        return rules
+    }
+
     // MARK: 删除
 
     func delete(_ offsets: IndexSet) {
@@ -194,6 +214,7 @@ func importFile(from url: URL) async throws {
             try? fm.removeItem(at: analysisURL(item.id))
             try? fm.removeItem(at: voiceConfigURL(item.id))
             try? fm.removeItem(at: nameListsURL(item.id))
+            try? fm.removeItem(at: rulesURL(item.id))
         }
         documents.remove(atOffsets: offsets)
         saveIndex()

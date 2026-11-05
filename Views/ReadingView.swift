@@ -28,6 +28,7 @@ struct ReadingView: View {
     @State private var voiceOverrides: [String: String] = [:]    // 每文档声音配置：角色称呼 → 声音 identifier
     @State private var docBlacklist: [String] = []      // 每文档人名黑名单
     @State private var docWhitelist: [String] = []      // 每文档人名白名单
+    @State private var docRules: [CustomRule] = []      // 每文档自定义朗读规则（≤20 条）
 
     var body: some View {
         VStack(spacing: 0) {
@@ -105,6 +106,7 @@ struct ReadingView: View {
                     whitelisted: docWhitelist,
                     voiceOverrides: voiceOverrides,
                     otherDocuments: store.documentsWithVoiceConfig(excluding: item.id),
+                    rules: docRules,
                     onEdited: {
                         // 用户改名/删除角色后，把最新结果写回持久缓存（圆灯颜色不变）
                         if let a = analysis {
@@ -134,6 +136,11 @@ struct ReadingView: View {
                         voiceOverrides = merged
                         store.saveVoiceConfig(merged, for: item.id)
                         showToast("已导入「\(sourceDoc.name)」的人物声音配置（仅对本文档生效）")
+                    },
+                    onRulesChanged: { rules in
+                        docRules = rules
+                        store.saveRules(rules, for: item.id)
+                        player.customRules = rules   // 朗读中即时生效
                     }
                 )
             }
@@ -221,6 +228,9 @@ struct ReadingView: View {
         let lists = store.loadNameLists(for: item.id)
         docBlacklist = lists.black
         docWhitelist = lists.white
+        // 恢复自定义朗读规则并注入播放器
+        docRules = store.loadRules(for: item.id)
+        player.customRules = docRules
         // 若朗读仍在进行（如从后台/锁屏返回），立即把高亮同步到当前位置
         syncHighlightNow()
     }
