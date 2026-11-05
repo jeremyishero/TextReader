@@ -50,5 +50,15 @@ final class AppSettings: ObservableObject {
         if let v = d.string(forKey: "cloudTTSVoice"), !v.isEmpty { cloudTTSVoice = v }
     }
 
-    private func save<T>(_ key: String, _ value: T) { UserDefaults.standard.set(value, forKey: key) }
+    /// nil 值不能直接 set：首次启动 load() 会把 String? 属性置为 nil，didSet 触发本方法时
+    /// Optional(nil) 若传入 setObject:forKey: 会被 CoreFoundation 校验拒绝
+    /// （_CFPrefsValidateValueForKey → NSException → abort，见 TextReader-2026-11-05-091947.ips）。
+    /// 因此 nil 统一走 removeObject，非 nil 才 set。
+    private func save(_ key: String, _ value: Any?) {
+        guard let value else {
+            UserDefaults.standard.removeObject(forKey: key)
+            return
+        }
+        UserDefaults.standard.set(value, forKey: key)
+    }
 }
