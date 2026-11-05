@@ -17,6 +17,9 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 每读到一个新段/分块回调一次（供 ReadingView 保存进度）
     var onIndexChange: ((Int, Bool) -> Void)?   // (index, isAnalyzedMode)
 
+    /// 云端合成失败回退本地时回调一次（供 UI 弹出轻提示，不再静默回退）
+    var onCloudFallback: (() -> Void)?
+
     private let synth = AVSpeechSynthesizer()
     private var segments: [SpeechSegment] = []
     private var plainChunks: [String] = []
@@ -146,13 +149,16 @@ final class TTSPlayer: NSObject, ObservableObject {
         synth.speak(utterance)
     }
 
-    /// 云端合成（AVAudioPlayer 播放）；失败自动回退本地。
+    /// 云端合成（AVAudioPlayer 播放）；失败自动回退本地并通知 UI。
     private func speakCloud(_ text: String) {
         Task {
             let data = await cloudProvider?(text)
             guard let data, data.count > 0, isPlaying, currentText() == text else {
-                // 云端失败 → 本次段回退本地合成
-                if isPlaying { speakLocal(text) }
+                // 云端失败 → 本次段回退本地合成（并提示用户）
+                if isPlaying {
+                    onCloudFallback?()
+                    speakLocal(text)
+                }
                 return
             }
             do {
@@ -161,6 +167,7 @@ final class TTSPlayer: NSObject, ObservableObject {
                 audioPlayer = p
                 p.play()
             } catch {
+                onCloudFallback?()
                 speakLocal(text)
             }
         }
