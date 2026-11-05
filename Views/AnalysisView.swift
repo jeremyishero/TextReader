@@ -57,15 +57,18 @@ struct AnalysisView: View {
         case rule(CustomRule)
     }
 
-    /// 可供选择的声音：简体中文普通话优先，最多 10 个（系统有几个就有几个）
-    private var voiceOptions: [AVSpeechSynthesisVoice] {
+    /// 可供选择的声音：简体中文普通话优先，最多 10 个（系统有几个就有几个）。
+    /// 缓存为静态：AVSpeechSynthesisVoice.speechVoices() 是较慢的系统调用，
+    /// 之前每个角色行渲染都会调一次（10 行 = 10 次），是「打开角色面板卡顿」的主要元凶。
+    private static let cachedVoiceOptions: [AVSpeechSynthesisVoice] = {
         let all = AVSpeechSynthesisVoice.speechVoices()
         var pool = all.filter { $0.language == "zh-CN" }
         if pool.isEmpty { pool = all.filter { $0.language.hasPrefix("zh-Hans") } }
         if pool.isEmpty { pool = all.filter { $0.language.hasPrefix("zh") } }
         if pool.isEmpty { pool = all }
         return Array(pool.prefix(10))
-    }
+    }()
+    private var voiceOptions: [AVSpeechSynthesisVoice] { Self.cachedVoiceOptions }
     /// 前 10 个角色可单独指定声音
     private var assignableRoles: [CharacterRole] {
         Array(analysis.roles.prefix(10))
@@ -91,21 +94,19 @@ struct AnalysisView: View {
                 }
                 .frame(maxWidth: .infinity)
 
-                // 左侧固定目录栏 + 展开的目录面板
+                // 左侧固定目录栏 + 展开的目录面板（无动画，点击立现）
                 HStack(spacing: 0) {
                     sidebar
                     if activePanel != nil {
                         panelView
                             .frame(width: 300)
                             .background(.regularMaterial)
-                            .transition(.move(edge: .leading))
                     }
                     Spacer(minLength: 0)
                 }
             }
             .navigationTitle("解析结果")
             .navigationBarTitleDisplayMode(.inline)
-            .animation(.easeInOut(duration: 0.2), value: activePanel)
             .alert("修改角色称呼", isPresented: $showRenameAlert) {
                 TextField("新称呼", text: $renameText)
                 Button("保存", action: commitRename)
@@ -188,14 +189,18 @@ struct AnalysisView: View {
 
     @ViewBuilder
     private var panelView: some View {
+        // LazyVStack：只渲染可见行，目录内容再多也秒开
         ScrollView {
-            switch activePanel {
-            case .roles: rolesPanel
-            case .blacklist: blacklistPanel
-            case .whitelist: whitelistPanel
-            case .rules: rulesPanel
-            case nil: EmptyView()
+            LazyVStack(alignment: .leading, spacing: 10) {
+                switch activePanel {
+                case .roles: rolesPanel
+                case .blacklist: blacklistPanel
+                case .whitelist: whitelistPanel
+                case .rules: rulesPanel
+                case nil: EmptyView()
+                }
             }
+            .padding(.vertical, 6)
         }
     }
 
