@@ -157,8 +157,8 @@ public struct CharacterAnalyzer {
             guard let c, c != "他", c != "她" else { return false }
             switch c.count {
             case 2:
-                // 旁白出现 ≥2 次 或 作为说话人出现 ≥2 次（垃圾已被清洗/停用词/长名占位拦截）
-                return (narrationCounts[c] ?? 0) >= 2 || (speakerCounts[c] ?? 0) >= 2
+                // 旁白 + 说话人 总出现 ≥2 次（垃圾已被清洗/停用词/长名占位拦截）
+                return (narrationCounts[c] ?? 0) + (speakerCounts[c] ?? 0) >= 2
             case 3:
                 return (speakerCounts[c] ?? 0) >= 2
             default:
