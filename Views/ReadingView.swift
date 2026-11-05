@@ -69,38 +69,8 @@ struct ReadingView: View {
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("整体解析") { runAnalysis() }
-                    .disabled(isAnalyzing || text.isEmpty)
-            }
-            // 解析状态指示灯：灰=未解析，蓝=本地解析，绿=云端解析；点击显示状态文字
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    statusMessage = statusText
-                } label: {
-                    Circle()
-                        .fill(lampColor)
-                        .frame(width: 9, height: 9)
-                }
-                .accessibilityLabel("解析状态指示灯")
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("解析结果") { showAnalysis = true }
-                    .disabled(analysis == nil)
-            }
-        }
-        .overlay {
-            // 规范：解析耗时可能超过 1 秒 → 全屏进度框（可取消）；静默回退/成功提示 → 轻提示；失败 → Alert
-            if isAnalyzing {
-                BusyHUD(title: "正在解析人物与情绪，请稍候…") {
-                    analysisTask?.cancel()
-                    isAnalyzing = false
-                }
-            } else if let toast {
-                ToastView(text: toast, isErrorStyle: true)
-            }
-        }
+        .toolbar { readerToolbar }
+        .overlay { feedbackOverlay }
         .alert(
             "解析失败",
             isPresented: Binding(
@@ -136,6 +106,44 @@ struct ReadingView: View {
             saveProgressNow()
             player.onIndexChange = nil
             player.onCloudFallback = nil
+        }
+    }
+
+    // MARK: 工具栏与反馈浮层
+
+    @ToolbarContentBuilder
+    private var readerToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button("整体解析") { runAnalysis() }
+                .disabled(isAnalyzing || text.isEmpty)
+        }
+        // 解析状态指示灯：灰=未解析，蓝=本地解析，绿=云端解析；点击显示状态文字
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button {
+                statusMessage = statusText
+            } label: {
+                Circle()
+                    .fill(lampColor)
+                    .frame(width: 9, height: 9)
+            }
+            .accessibilityLabel("解析状态指示灯")
+        }
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button("解析结果") { showAnalysis = true }
+                .disabled(analysis == nil)
+        }
+    }
+
+    @ViewBuilder
+    private var feedbackOverlay: some View {
+        // 规范：解析耗时可能超过 1 秒 → 全屏进度框（可取消）；静默回退/成功提示 → 轻提示；失败 → Alert
+        if isAnalyzing {
+            BusyHUD(title: "正在解析人物与情绪，请稍候…") {
+                analysisTask?.cancel()
+                isAnalyzing = false
+            }
+        } else if let toast {
+            ToastView(text: toast, isErrorStyle: true)
         }
     }
 
