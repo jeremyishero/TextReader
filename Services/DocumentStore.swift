@@ -122,8 +122,8 @@ func importFile(from url: URL) async throws {
 
     // MARK: PDF（PDFKit / Vision 仅 Apple 平台可用，故放在 App 层）
 
-    /// 逐页提取文本；无文本层的页（扫描版）自动 OCR。static：供后台线程调用，不触碰实例状态。
-    private static func extractPDFText(_ url: URL, ocrUsed: inout Bool) -> String? {
+    /// 逐页提取文本；无文本层的页（扫描版）自动 OCR。nonisolated static：供后台线程调用，不触碰实例状态。
+    private nonisolated static func extractPDFText(_ url: URL, ocrUsed: inout Bool) -> String? {
         guard let doc = PDFDocument(url: url) else { return nil }
         var out = ""
         for i in 0..<doc.pageCount {

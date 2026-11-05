@@ -30,7 +30,7 @@ struct DocumentListView: View {
                         HStack {
                             Label(doc.name, systemImage: icon(for: doc.fileType))
                             Spacer()
-                            if doc.ocrUsed {
+                            if doc.ocrUsed == true {
                                 Text("OCR")
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
