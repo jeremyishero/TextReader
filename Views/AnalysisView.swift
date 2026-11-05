@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import CoreLogic
+import UniformTypeIdentifiers
 
 /// 展示「整体解析」结果。
 /// 左侧固定四个目录按钮（滚动不受影响；默认展开「角色」，点一下收起/展开）：
@@ -50,6 +51,8 @@ struct AnalysisView: View {
     @State private var showTextImportSheet = false
     @State private var importText = ""
     @State private var importSummary: String? = nil
+    // 从表格(.xlsx)导入角色
+    @State private var showXlsxImporter = false
 
     private enum DeleteTarget {
         case role(CharacterRole)
@@ -140,6 +143,21 @@ struct AnalysisView: View {
             .sheet(isPresented: $showTextImportSheet) {
                 textImportSheet
             }
+            .fileImporter(
+                isPresented: $showXlsxImporter,
+                allowedContentTypes: [xlsxType],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    importRolesFromXlsx(url)
+                case .failure(let error):
+                    // 用户取消选择：静默返回，不算异常
+                    guard (error as? CocoaError)?.code != .userCancelled else { return }
+                    importSummary = "打开文件选择器失败：\(error.localizedDescription)"
+                }
+            }
             .alert("导入完成", isPresented: Binding(
                 get: { importSummary != nil },
                 set: { if !$0 { importSummary = nil } }
@@ -218,6 +236,8 @@ struct AnalysisView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(otherDocuments.isEmpty)
+            }
+            HStack {
                 Button {
                     importText = ""
                     showTextImportSheet = true
@@ -226,9 +246,16 @@ struct AnalysisView: View {
                         .font(.caption)
                 }
                 .buttonStyle(.bordered)
+                Button {
+                    showXlsxImporter = true
+                } label: {
+                    Label("从表格导入(.xlsx)", systemImage: "tablecells")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
             }
             if otherDocuments.isEmpty {
-                Text("暂无其他已配置文档（可使用「从文本导入角色」）")
+                Text("暂无其他已配置文档（可使用文本/表格导入角色）")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -655,7 +682,8 @@ struct AnalysisView: View {
         return result
     }
 
-    /// 把导入的角色合并进当前解析结果：按称呼匹配已有角色则合并（补别名/更新性别），否则新建。
+    /// 把导入的角色合并进当前解析结果：按「导入姓名 = 已有角色名/别名」匹配合并（补别名/更新性别），否则新建。
+    /// 注意：别名中若与**其他角色的正式名称**冲突（如「吴七」既是独立角色又是慕容衍的伪装身份），跳过该别名，避免串角色。
     private func applyImportedRoles(_ parsed: [(name: String, gender: Gender, aliases: [String])]) {
         guard !parsed.isEmpty else {
             importSummary = "没有解析到任何角色。请检查格式：\n人物：X，性别：男/女\n别称：…"
@@ -664,10 +692,13 @@ struct AnalysisView: View {
         var created = 0, merged = 0
         for p in parsed {
             if let idx = analysis.roles.firstIndex(where: {
-                $0.canonicalName == p.name || $0.aliases.contains(p.name) || p.aliases.contains($0.canonicalName)
+                $0.canonicalName == p.name || $0.aliases.contains(p.name)
             }) {
                 var role = analysis.roles[idx]
-                for a in p.aliases + [p.name] where a != role.canonicalName && !role.aliases.contains(a) {
+                // 其他角色的正式名称不能作为本角色的别名（防止「吴七（伪装）」把两人混成一人）
+                let otherNames = Set(analysis.roles.filter { $0.id != role.id }.map { $0.canonicalName })
+                for a in p.aliases + [p.name]
+                where a != role.canonicalName && !role.aliases.contains(a) && !otherNames.contains(a) {
                     role.aliases.append(a)
                 }
                 if p.gender != .neutral {
@@ -677,11 +708,14 @@ struct AnalysisView: View {
                 analysis.roles[idx] = role
                 merged += 1
             } else {
+                // 新建角色的别名同样不能撞其他角色的正式名称
+                let otherNames = Set(analysis.roles.map { $0.canonicalName })
+                let safeAliases = p.aliases.filter { !otherNames.contains($0) }
                 let hint: String? = p.gender == .male ? "male" : (p.gender == .female ? "female" : "neutral")
                 analysis.roles.append(CharacterRole(
                     id: "role_imp_\(analysis.roles.count)_\(p.name)",
                     canonicalName: p.name,
-                    aliases: p.aliases,
+                    aliases: safeAliases,
                     gender: p.gender,
                     voiceHint: hint
                 ))
@@ -691,6 +725,23 @@ struct AnalysisView: View {
         onEdited?()
         showTextImportSheet = false
         importSummary = "导入完成：新建 \(created) 个角色，合并 \(merged) 个已有角色。"
+    }
+
+    // MARK: 从表格（.xlsx）导入角色
+
+    private var xlsxType: UTType {
+        UTType(filenameExtension: "xlsx") ?? .data
+    }
+
+    private func importRolesFromXlsx(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let parsed = XlsxRoleParser().parseRoles(from: url)
+        guard !parsed.isEmpty else {
+            importSummary = "未能从该表格解析到角色。请确认是人物解析表（含「姓名」「性别」列的工作表）。"
+            return
+        }
+        applyImportedRoles(parsed.map { (name: $0.name, gender: $0.gender, aliases: $0.aliases) })
     }
 
     // MARK: 导入其他文档配置

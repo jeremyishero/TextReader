@@ -108,4 +108,45 @@ final class CoreLogicTests: XCTestCase {
             XCTAssertLessThanOrEqual(c.count, 70, "分块不应过长")
         }
     }
+
+    func testXlsxRoleImport() throws {
+        // 构造最小 .xlsx（sharedStrings + sheet1），验证人物解析表导入
+        let sst = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="6" uniqueCount="6">
+          <si><t>姓名</t></si>
+          <si><t>别名/身份</t></si>
+          <si><t>性别</t></si>
+          <si><t>慕容衍</t></si>
+          <si><t>太子、吴七（伪装）</t></si>
+          <si><t>男</t></si>
+        </sst>
+        """
+        let sheet = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+          <sheetData>
+            <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row>
+            <row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2" t="s"><v>4</v></c><c r="C2" t="s"><v>5</v></c></row>
+          </sheetData>
+        </worksheet>
+        """
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let xl = base.appendingPathComponent("xl", isDirectory: true)
+        let wsDir = xl.appendingPathComponent("worksheets", isDirectory: true)
+        try FileManager.default.createDirectory(at: wsDir, withIntermediateDirectories: true)
+        try Data(sst.utf8).write(to: xl.appendingPathComponent("sharedStrings.xml"))
+        try Data(sheet.utf8).write(to: wsDir.appendingPathComponent("sheet1.xml"))
+        let tmp = base.appendingPathExtension("xlsx")
+        var archive = try Archive(url: tmp, accessMode: .create)
+        try archive.addEntry(with: "xl/sharedStrings.xml", relativeTo: base)
+        try archive.addEntry(with: "xl/worksheets/sheet1.xml", relativeTo: base)
+
+        let roles = XlsxRoleParser().parseRoles(from: tmp)
+        XCTAssertEqual(roles.count, 1, "应解析出 1 个角色")
+        XCTAssertEqual(roles.first?.name, "慕容衍")
+        XCTAssertEqual(roles.first?.gender, .male)
+        XCTAssertEqual(roles.first?.aliases, ["太子", "吴七"], "别名应按顿号拆分并剥掉括号备注")
+    }
 }
