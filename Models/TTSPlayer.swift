@@ -11,8 +11,15 @@ import CoreLogic
 @MainActor
 final class TTSPlayer: NSObject, ObservableObject {
     @Published var isPlaying = false
-    @Published var rate: Float = 0.5
+    /// 语速（显示标度）：1.0 = 正常人语速，范围 0.5–3.0。
+    /// 内部朗读时乘以 rateScale 换算为 AVSpeechUtterance 标度（其 0.5 = 正常语速）。
+    @Published var rate: Float = 1.0
     @Published var currentSegmentIndex: Int = -1
+    /// 当前正在朗读的文本（供阅读页同步高亮段落）
+    @Published var nowSpeakingText: String?
+
+    /// 显示语速 → AVSpeech 内部语速 的换算系数（AVSpeech 的 0.5 = 正常语速）
+    static let rateScale: Float = 0.5
 
     /// 每读到一个新段/分块回调一次（供 ReadingView 保存进度）
     var onIndexChange: ((Int, Bool) -> Void)?   // (index, isAnalyzedMode)
@@ -101,11 +108,13 @@ final class TTSPlayer: NSObject, ObservableObject {
         isPlaying = false
         currentIndex = 0
         currentSegmentIndex = -1
+        nowSpeakingText = nil
     }
 
     private func finish() {
         isPlaying = false
         currentSegmentIndex = -1
+        nowSpeakingText = nil
     }
 
     private func currentText() -> String? {
@@ -118,6 +127,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     private func speakCurrent() {
         guard let text = currentText() else { finish(); return }
         currentSegmentIndex = currentIndex
+        nowSpeakingText = text
         onIndexChange?(currentIndex, mode == .segments)
 
         if useCloud {
@@ -127,9 +137,10 @@ final class TTSPlayer: NSObject, ObservableObject {
         }
     }
 
-    /// 本地合成（AVSpeechSynthesizer）
+    /// 本地合成（AVSpeechSynthesizer）。显示语速 × rateScale 换算为内部标度。
     private func speakLocal(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
+        let internalRate = rate * Self.rateScale
         switch mode {
         case .segments:
             let seg = segments[currentIndex]
@@ -138,13 +149,13 @@ final class TTSPlayer: NSObject, ObservableObject {
             } else {
                 utterance.voice = voiceForText(seg.text) ?? defaultVoice
             }
-            let prosody = seg.emotion.prosody(baseRate: rate)
+            let prosody = seg.emotion.prosody(baseRate: internalRate)
             utterance.rate = prosody.rate
             utterance.pitchMultiplier = prosody.pitch
             utterance.volume = prosody.volume
         case .plain:
             utterance.voice = voiceForText(text) ?? defaultVoice
-            utterance.rate = rate
+            utterance.rate = internalRate
         }
         synth.speak(utterance)
     }

@@ -22,19 +22,19 @@ public struct Prosody: Sendable {
 }
 
 public extension Emotion {
-    /// 将情绪映射为可执行的朗读参数。baseRate 为用户设定的全局语速。
+    /// 将情绪映射为可执行的朗读参数。baseRate 为用户设定的全局语速（内部标度：0.5=正常人语速）。
     /// 离线语音能力有限，仅以 rate/pitch/volume 区分情绪。
     func prosody(baseRate: Float = 0.5) -> Prosody {
-        let clamped = min(max(baseRate, 0.1), 1.0)
+        let clamped = min(max(baseRate, 0.1), 2.0)
         switch self {
         case .neutral:
             return Prosody(rate: clamped, pitch: 1.0, volume: 1.0)
         case .joy:
-            return Prosody(rate: min(clamped * 1.1, 1.0), pitch: 1.10, volume: 1.0)
+            return Prosody(rate: min(clamped * 1.1, 2.0), pitch: 1.10, volume: 1.0)
         case .happiness:
-            return Prosody(rate: min(clamped * 1.15, 1.0), pitch: 1.15, volume: 1.05)
+            return Prosody(rate: min(clamped * 1.15, 2.0), pitch: 1.15, volume: 1.05)
         case .anger:
-            return Prosody(rate: min(clamped * 1.20, 1.0), pitch: 1.15, volume: 1.10)
+            return Prosody(rate: min(clamped * 1.20, 2.0), pitch: 1.15, volume: 1.10)
         case .sorrow:
             return Prosody(rate: max(clamped * 0.80, 0.1), pitch: 0.85, volume: 0.90)
         }

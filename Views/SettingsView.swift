@@ -21,8 +21,8 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("默认语速") {
-                    Slider(value: $settings.defaultRate, in: 0.1...1.0, step: 0.05)
-                    Text(String(format: "当前：%.2f", settings.defaultRate))
+                    Slider(value: $settings.defaultRate, in: 0.5...3.0, step: 0.05)
+                    Text(String(format: "当前：%.2f×（1.0 = 正常人语速）", settings.defaultRate))
                 }
 
                 Section {

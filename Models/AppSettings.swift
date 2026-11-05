@@ -8,7 +8,8 @@ import Combine
 final class AppSettings: ObservableObject {
 
     // MARK: 基础
-    @Published var defaultRate: Float = 0.5 { didSet { save("defaultRate", defaultRate) } }
+    /// 默认语速（显示标度）：1.0 = 正常人语速，范围 0.5–3.0
+    @Published var defaultRate: Float = 1.0 { didSet { save("defaultRate", defaultRate) } }
     @Published var defaultVoiceIdentifier: String? { didSet { save("defaultVoiceIdentifier", defaultVoiceIdentifier) } }
 
     // MARK: 按语言选声（v1 手动在设置里选声，朗读时按文本自动切换）
@@ -35,6 +36,14 @@ final class AppSettings: ObservableObject {
 
     private func load() {
         let d = UserDefaults.standard
+        // 语速标度迁移：旧版 0.1–1.0（0.5=正常）→ 新版 0.5–3.0（1.0=正常），只执行一次
+        if !d.bool(forKey: "rateScaleV2Migrated") {
+            if d.object(forKey: "defaultRate") != nil {
+                let old = d.float(forKey: "defaultRate")
+                defaultRate = min(max(old * 2, 0.5), 3.0)
+            }
+            d.set(true, forKey: "rateScaleV2Migrated")
+        }
         if d.object(forKey: "defaultRate") != nil { defaultRate = d.float(forKey: "defaultRate") }
         defaultVoiceIdentifier = d.string(forKey: "defaultVoiceIdentifier")
         voiceZhHans = d.string(forKey: "voiceZhHans")

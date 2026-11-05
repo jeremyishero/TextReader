@@ -8,15 +8,20 @@ struct ReadingView: View {
     let item: DocumentItem
 
     @State private var text: String = ""
+    @State private var paragraphs: [String] = []
     @State private var analysis: AnalysisResult?
+    @State private var analysisSource: String?          // "cloud" / "local"
     @State private var isAnalyzing = false
     @State private var showAnalysis = false
     @State private var useAnalyzed = false
     @State private var pendingStart: Int? = nil   // 断点续读起始段
     @State private var lastSaveAt = Date.distantPast
     @State private var analysisErrorMessage: String?
+    @State private var statusMessage: String?           // 圆灯点击后显示的状态
     @State private var toast: String?
     @State private var toastTask: Task<Void, Never>?
+    @State private var analysisTask: Task<Void, Never>?
+    @State private var highlightIndex: Int?             // 正在朗读的段落
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,11 +30,45 @@ struct ReadingView: View {
                     pendingStart = p.segmentIndex
                 }
             }
-            ScrollView {
-                Text(text.isEmpty ? "（未能提取到文本，可能是扫描版 PDF 或空文件）" : text)
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+            if paragraphs.isEmpty {
+                ScrollView {
+                    Text("（未能提取到文本，可能是扫描版 PDF 或空文件）")
+                        .padding()
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                // 分段懒加载渲染：整本小说也不会卡死；朗读时同步高亮并自动滚动到当前段
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 6) {
+                            ForEach(paragraphs.indices, id: \.self) { idx in
+                                Text(paragraphs[idx])
+                                    .padding(6)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        highlightIndex == idx
+                                            ? Color.yellow.opacity(0.30)
+                                            : Color.clear
+                                    )
+                                    .cornerRadius(6)
+                                    .textSelection(.enabled)
+                                    .id(idx)
+                            }
+                        }
+                        .padding()
+                    }
+                    .onReceive(player.$nowSpeakingText) { speaking in
+                        guard let speaking, !speaking.isEmpty else { return }
+                        let idx = paragraphIndex(for: speaking)
+                        if let idx, idx != highlightIndex {
+                            highlightIndex = idx
+                            withAnimation {
+                                proxy.scrollTo(idx, anchor: .center)
+                            }
+                        }
+                    }
+                }
             }
             Divider()
             PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart)
@@ -41,15 +80,29 @@ struct ReadingView: View {
                 Button("整体解析") { runAnalysis() }
                     .disabled(isAnalyzing || text.isEmpty)
             }
+            // 解析状态指示灯：灰=未解析，蓝=本地解析，绿=云端解析；点击显示状态文字
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    statusMessage = statusText
+                } label: {
+                    Circle()
+                        .fill(lampColor)
+                        .frame(width: 9, height: 9)
+                }
+                .accessibilityLabel("解析状态指示灯")
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button("解析结果") { showAnalysis = true }
                     .disabled(analysis == nil)
             }
         }
         .overlay {
-            // 规范：解析耗时可能超过 1 秒 → 全屏进度框；静默回退/成功提示 → 轻提示；失败 → Alert
+            // 规范：解析耗时可能超过 1 秒 → 全屏进度框（可取消）；静默回退/成功提示 → 轻提示；失败 → Alert
             if isAnalyzing {
-                BusyHUD(title: "正在解析人物与情绪，请稍候…")
+                BusyHUD(title: "正在解析人物与情绪，请稍候…") {
+                    analysisTask?.cancel()
+                    isAnalyzing = false
+                }
             } else if let toast {
                 ToastView(text: toast, isErrorStyle: true)
             }
@@ -65,6 +118,17 @@ struct ReadingView: View {
         } message: {
             Text(analysisErrorMessage ?? "")
         }
+        .alert(
+            "解析状态",
+            isPresented: Binding(
+                get: { statusMessage != nil },
+                set: { if !$0 { statusMessage = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(statusMessage ?? "")
+        }
         .sheet(isPresented: $showAnalysis) {
             if let a = analysis { AnalysisView(analysis: a) }
         }
@@ -77,19 +141,43 @@ struct ReadingView: View {
         }
     }
 
-    // MARK: 轻提示
-
-    private func showToast(_ text: String) {
-        toast = text
-        toastTask?.cancel()
-        toastTask = Task {
-            try? await Task.sleep(nanoseconds: 2_200_000_000)
-            if !Task.isCancelled { toast = nil }
-        }
-    }
+    // MARK: 数据加载
 
     private func loadText() {
-        if let t = store.text(for: item) { text = t }
+        guard let t = store.text(for: item) else { return }
+        text = t
+        // 按自然段拆分：大文件懒加载渲染不卡顿，且可逐段高亮
+        paragraphs = t.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    // MARK: 朗读高亮
+
+    /// 找到当前朗读文本所在的段落：优先从上次位置向后找（朗读是顺序推进的），失败再从头找。
+    private func paragraphIndex(for speaking: String) -> Int? {
+        let key = String(speaking.trimmingCharacters(in: .whitespacesAndNewlines).prefix(12))
+        guard !key.isEmpty else { return nil }
+        if let last = highlightIndex, paragraphs.indices.contains(last), paragraphs[last].contains(key) {
+            return last
+        }
+        let start = (highlightIndex ?? -1) + 1
+        if start < paragraphs.count,
+           let i = paragraphs[start...].firstIndex(where: { $0.contains(key) }) {
+            return i
+        }
+        return paragraphs.firstIndex(where: { $0.contains(key) })
+    }
+
+    // MARK: 解析状态灯
+
+    private var lampColor: Color {
+        guard analysis != nil else { return Color.gray }
+        return analysisSource == "cloud" ? Color.green : Color.blue
+    }
+    private var statusText: String {
+        guard analysis != nil else { return "未解析：点击「整体解析」开始分析人物与情绪。" }
+        return analysisSource == "cloud" ? "云端解析成功" : "本地解析成功"
     }
 
     // MARK: 播放器接线（进度记忆 + 云端 TTS）
@@ -125,6 +213,17 @@ struct ReadingView: View {
         store.updateProgress(documentId: item.id, segmentIndex: idx, analyzed: useAnalyzed)
     }
 
+    // MARK: 轻提示
+
+    private func showToast(_ text: String) {
+        toast = text
+        toastTask?.cancel()
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: 2_200_000_000)
+            if !Task.isCancelled { toast = nil }
+        }
+    }
+
     // MARK: 整体解析
 
     private func runAnalysis() {
@@ -132,7 +231,7 @@ struct ReadingView: View {
         let src = text
         let useCloud = settings.cloudLLMEnabled && !settings.cloudLLMApiKey.isEmpty
         let apiKey = settings.cloudLLMApiKey
-        Task {
+        analysisTask = Task {
             var result: AnalysisResult?
             var cloudFailed = false
             if useCloud {
@@ -148,12 +247,14 @@ struct ReadingView: View {
                     CharacterAnalyzer().analyze(src)
                 }.value
             }
+            guard !Task.isCancelled else { return }
             guard let res = result else {
                 isAnalyzing = false
                 analysisErrorMessage = "解析失败：本地解析与云端解析均未成功。请检查网络连接，或到设置页确认云端 API Key 是否有效后重试。"
                 return
             }
             analysis = res
+            analysisSource = (useCloud && !cloudFailed) ? "cloud" : "local"
             useAnalyzed = true
             isAnalyzing = false
             if cloudFailed {

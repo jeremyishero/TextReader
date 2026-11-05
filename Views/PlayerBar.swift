@@ -30,9 +30,9 @@ struct PlayerBar: View {
 
             HStack {
                 Text("语速")
-                Slider(value: $player.rate, in: 0.1...1.0, step: 0.05)
-                Text(String(format: "%.2f", player.rate))
-                    .frame(width: 44, alignment: .trailing)
+                Slider(value: $player.rate, in: 0.5...3.0, step: 0.05)
+                Text(String(format: "%.2f×", player.rate))
+                    .frame(width: 52, alignment: .trailing)
                     .font(.caption.monospacedDigit())
             }
 
