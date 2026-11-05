@@ -85,16 +85,16 @@ public struct CharacterAnalyzer {
     public func analyze(_ text: String) -> AnalysisResult {
         let units = segmentText(text)
 
-        // ---- Pass 1：三字说话人候选计数（长名来源） ----
+        // ---- Pass 1：说话人候选计数（所有长度；三字及以上构成「长名」） ----
         var speakerCounts: [String: Int] = [:]
         for unit in units {
             if case .dialogue(_, let preceding) = unit {
-                if let raw = resolveSpeaker(preceding), raw != "他", raw != "她", raw.count == 3 {
+                if let raw = resolveSpeaker(preceding), raw != "他", raw != "她" {
                     speakerCounts[raw, default: 0] += 1
                 }
             }
         }
-        let longNames = speakerCounts.filter { $0.value >= 2 }.map(\.key)
+        let longNames = speakerCounts.filter { $0.value >= 2 && $0.key.count >= 3 }.map(\.key)
 
         // ---- 旁白二字候选扫描（长名占位排除后） ----
         func scanNarration(_ body: String) -> [String] {
