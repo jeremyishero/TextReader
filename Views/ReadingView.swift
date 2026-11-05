@@ -45,17 +45,9 @@ struct ReadingView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 6) {
                             ForEach(paragraphs.indices, id: \.self) { idx in
-                                Text(paragraphs[idx])
-                                    .padding(6)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        highlightIndex == idx
-                                            ? Color.yellow.opacity(0.30)
-                                            : Color.clear
-                                    )
-                                    .cornerRadius(6)
-                                    .textSelection(.enabled)
-                                    .id(idx)
+                                ParagraphRow(text: paragraphs[idx],
+                                             isHighlighted: highlightIndex == idx,
+                                             index: idx)
                             }
                         }
                         .padding()
@@ -301,6 +293,23 @@ struct ReadingView: View {
             }
             showAnalysis = true
         }
+    }
+}
+
+/// 正文段落行（拆出子视图，避免 SwiftUI 大表达式类型检查超时）。
+private struct ParagraphRow: View {
+    let text: String
+    let isHighlighted: Bool
+    let index: Int
+
+    var body: some View {
+        Text(text)
+            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isHighlighted ? Color.yellow.opacity(0.30) : Color.clear)
+            .cornerRadius(6)
+            .textSelection(.enabled)
+            .id(index)
     }
 }
 
