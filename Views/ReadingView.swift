@@ -29,6 +29,8 @@ struct ReadingView: View {
     @State private var docBlacklist: [String] = []      // 每文档人名黑名单
     @State private var docWhitelist: [String] = []      // 每文档人名白名单
     @State private var docRules: [CustomRule] = []      // 每文档自定义朗读规则（≤20 条）
+    @State private var showTOC = false                  // 章节目录
+    @State private var chapterList: [(index: Int, title: String)] = []   // (段落索引, 章节标题)
 
     var body: some View {
         VStack(spacing: 0) {
@@ -67,10 +69,16 @@ struct ReadingView: View {
                             }
                         }
                     }
+                    // 章节目录（在 ScrollViewReader 作用域内，才能用 proxy 跳转）
+                    .sheet(isPresented: $showTOC) {
+                        tocSheet(proxy: proxy)
+                    }
                 }
             }
             Divider()
-            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides)
+            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides, onOpenTOC: {
+                showTOC = true
+            })
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -231,8 +239,115 @@ struct ReadingView: View {
         // 恢复自定义朗读规则并注入播放器
         docRules = store.loadRules(for: item.id)
         player.customRules = docRules
+        // 章节目录：形如「第X章/回/卷/节 …」的短段落
+        chapterList = Self.detectChapters(in: paragraphs)
         // 若朗读仍在进行（如从后台/锁屏返回），立即把高亮同步到当前位置
         syncHighlightNow()
+    }
+
+    /// 章节检测：短段落且以「第X章/回/卷/节」开头
+    static func detectChapters(in paragraphs: [String]) -> [(index: Int, title: String)] {
+        guard let re = try? NSRegularExpression(pattern: "^第[一二三四五六七八九十百千0-9]+[章回卷节]") else { return [] }
+        var out: [(Int, String)] = []
+        for (idx, p) in paragraphs.enumerated() {
+            guard p.count <= 40 else { continue }
+            let ns = p as NSString
+            if re.firstMatch(in: p, range: NSRange(location: 0, length: ns.length)) != nil {
+                out.append((idx, p))
+            }
+        }
+        return out
+    }
+
+    // MARK: 章节目录
+
+    /// 当前朗读位置所在章节（段落索引）
+    private var currentChapterParagraph: Int? {
+        guard let h = highlightIndex else { return nil }
+        return chapterList.filter { $0.index <= h }.last?.index
+    }
+
+    /// 章节目录 sheet（在 ScrollViewReader 作用域内构建，tap 才能滚动定位）
+    private func tocSheet(proxy: ScrollViewProxy) -> some View {
+        NavigationStack {
+            List {
+                if chapterList.isEmpty {
+                    Text("未检测到章节标记（形如「第X章 …」的独立段落）。")
+                        .foregroundColor(.secondary)
+                }
+                ForEach(chapterList, id: \.index) { ch in
+                    HStack(spacing: 10) {
+                        Text(ch.title)
+                            .lineLimit(1)
+                            .foregroundColor(currentChapterParagraph == ch.index ? .accentColor : .primary)
+                        if currentChapterParagraph == ch.index {
+                            Text("当前")
+                                .font(.caption2)
+                                .foregroundColor(.accentColor)
+                        }
+                        Spacer()
+                        // 从本章开始朗读：把章节段落映射为朗读分段起点
+                        Button {
+                            showTOC = false
+                            if let seg = nearestSegmentIndex(forParagraph: ch.index) {
+                                pendingStart = seg
+                                showToast("已设置从「\(ch.title)」开始朗读，点播放生效")
+                            }
+                        } label: {
+                            Image(systemName: "play.circle")
+                                .foregroundColor(.accentColor)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // 视图跳转：滚动到该章节段落
+                        showTOC = false
+                        withAnimation {
+                            proxy.scrollTo(ch.index, anchor: .top)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("目录（\(chapterList.count) 章）")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") { showTOC = false }
+                }
+            }
+        }
+    }
+
+    /// 找到「从目标段落开始朗读」的朗读分段索引：按顺序把分段映射到段落，第一个落在目标段落之后的分段即为起点。
+    private func nearestSegmentIndex(forParagraph target: Int) -> Int? {
+        guard !text.isEmpty else { return nil }
+        let chunks: [String]
+        if useAnalyzed, let a = analysis, !a.segments.isEmpty {
+            chunks = a.segments.map { $0.text }
+        } else {
+            chunks = TextChunker().chunk(text)
+        }
+        guard !chunks.isEmpty else { return nil }
+        var searchStart = 0
+        var lastValid = 0
+        for (i, c) in chunks.enumerated() {
+            let key = String(c.trimmingCharacters(in: .whitespacesAndNewlines).prefix(12))
+            guard !key.isEmpty else { continue }
+            var found: Int? = nil
+            if searchStart < paragraphs.count,
+               let j = paragraphs[searchStart...].firstIndex(where: { $0.contains(key) }) {
+                found = j
+                searchStart = j
+            } else if let j = paragraphs.firstIndex(where: { $0.contains(key) }) {
+                found = j
+            }
+            if let f = found {
+                if f >= target { return i }
+                lastValid = i
+            }
+        }
+        return lastValid
     }
 
     // MARK: 朗读高亮

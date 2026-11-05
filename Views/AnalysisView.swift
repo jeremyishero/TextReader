@@ -798,6 +798,7 @@ struct AnalysisView: View {
         pendingImport = nil
 
         if replaceExisting {
+            let oldRoles = analysis.roles
             var newRoles: [CharacterRole] = []
             for (i, p) in parsed.enumerated() {
                 let hint: String? = p.gender == .male ? "male" : (p.gender == .female ? "female" : "neutral")
@@ -809,9 +810,28 @@ struct AnalysisView: View {
                     voiceHint: hint
                 ))
             }
+            // 关键：旧分段引用的是旧角色 id。按称呼（先精确名、再别名）把旧 id 重映射到新角色，
+            // 否则朗读分声与手动声音配置全部失配。匹配不上的降级为旁白。
+            var idMap: [String: String?] = [:]
+            for old in oldRoles {
+                var mapped: String?? = .some(nil)
+                if let exact = newRoles.first(where: { $0.canonicalName == old.canonicalName }) {
+                    mapped = .some(exact.id)
+                } else if let viaAlias = newRoles.first(where: {
+                    $0.aliases.contains(old.canonicalName) || old.aliases.contains($0.canonicalName)
+                }) {
+                    mapped = .some(viaAlias.id)
+                }
+                idMap[old.id] = mapped
+            }
+            for i in analysis.segments.indices {
+                if let oldId = analysis.segments[i].characterId {
+                    analysis.segments[i].characterId = idMap[oldId] ?? nil
+                }
+            }
             analysis.roles = newRoles
             visibleRoleCount = 10
-            importSummary = "已删除原有角色，替换为导入的 \(newRoles.count) 个角色。"
+            importSummary = "已删除原有角色，替换为导入的 \(newRoles.count) 个角色（原台词归属已按称呼迁移）。"
         } else {
             var created = 0, merged = 0
             for p in parsed {

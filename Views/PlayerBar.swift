@@ -12,6 +12,7 @@ struct PlayerBar: View {
     @Binding var useAnalyzed: Bool
     @Binding var startIndex: Int?   // 外部（ReadingView）传入的续读起点
     var voiceOverrides: [String: String] = [:]   // 每文档声音配置：角色称呼 → 声音 identifier
+    var onOpenTOC: (() -> Void)? = nil           // 打开章节目录
 
     var body: some View {
         VStack(spacing: 8) {
@@ -25,6 +26,13 @@ struct PlayerBar: View {
 
                 Button(action: { player.stop() }) {
                     Label("停止", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    onOpenTOC?()
+                } label: {
+                    Label("目录", systemImage: "list.bullet")
                 }
                 .buttonStyle(.bordered)
             }
@@ -89,18 +97,22 @@ struct PlayerBar: View {
         let cloud = cloudEnabled
 
         if useAnalyzed, let a = analysis, !a.segments.isEmpty {
-            // 先按性别池自动分配，再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
-            let autoAssign = TTSPlayer.assignVoices(roles: a.roles)
+            // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
+            let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)
             var map: [String: AVSpeechSynthesisVoice] = [:]
+            var pitches: [String: Float] = [:]
             for role in a.roles {
                 if let identifier = voiceOverrides[role.canonicalName],
                    let v = AVSpeechSynthesisVoice(identifier: identifier) {
                     map[role.id] = v
+                    pitches[role.id] = 1.0   // 手动指定声音后不叠加性别音高补偿
                 } else {
-                    map[role.id] = autoAssign[role.id]
+                    map[role.id] = assign.voices[role.id]
+                    pitches[role.id] = assign.pitches[role.id] ?? 1.0
                 }
             }
             player.setRoleVoices(map)
+            player.setRolePitches(pitches)
             player.playSegments(a.segments, startIndex: start, cloud: cloud)
         } else {
             guard !text.isEmpty else { return }

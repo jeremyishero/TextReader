@@ -39,6 +39,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     private var segments: [SpeechSegment] = []
     private var plainChunks: [String] = []
     private var roleVoices: [String: AVSpeechSynthesisVoice] = [:]
+    /// 每角色音高补偿（性别音高补偿/手动微调），默认 1.0
+    private var rolePitches: [String: Float] = [:]
     private var defaultVoice: AVSpeechSynthesisVoice?
     private var languageVoices: [ScriptLanguage: AVSpeechSynthesisVoice] = [:]
     var autoVoiceSwitch = true
@@ -83,17 +85,19 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func setRoleVoices(_ map: [String: AVSpeechSynthesisVoice]) { roleVoices = map }
+    func setRolePitches(_ map: [String: Float]) { rolePitches = map }
     func setDefaultVoice(_ v: AVSpeechSynthesisVoice?) { defaultVoice = v }
     func setLanguageVoices(_ map: [ScriptLanguage: AVSpeechSynthesisVoice]) { languageVoices = map }
 
-    /// 按性别池 + 轮转为各角色分配声音：
+    /// 按性别池 + 轮转为各角色分配声音与音高：
     /// - 声音池优先简体中文普通话（zh-CN），其次 zh-Hans，再退到 zh 系列，避免选到粤/台口音读出「洋腔洋调」；
     /// - 男角色从「男声池」取、女角色从「女声池」取、中性/未知从「中性池」取；
     /// - 同一性别的不同角色依次轮转池内不同声音（男 A / 男 B 声音不同）；
     /// - 按 role.id 分配一次，同一角色（含所有别名）全程固定同一声音；
-    /// - 池为空时借用其他池兜底，保证每个角色都有声音。
+    /// - **性别音高补偿**：若设备没有性别命名的声音素材（男声池/女声池为空），男角色音高 ×0.85、
+    ///   女角色 ×1.12，保证男女听感有区分；池存在时音高 1.0 不干预。
     /// 声音性别依据系统声音名称中的 Male/Female/男/女 关键词（注意先判 Female 再判 Male）。
-    static func assignVoices(roles: [CharacterRole]) -> [String: AVSpeechSynthesisVoice] {
+    static func assignVoicesAndPitches(roles: [CharacterRole]) -> (voices: [String: AVSpeechSynthesisVoice], pitches: [String: Float]) {
         let all = AVSpeechSynthesisVoice.speechVoices()
         var poolBase = all.filter { $0.language == "zh-CN" }
         if poolBase.isEmpty { poolBase = all.filter { $0.language.hasPrefix("zh-Hans") } }
@@ -113,29 +117,43 @@ final class TTSPlayer: NSObject, ObservableObject {
                 neutralPool.append(v)
             }
         }
+        let hadMalePool = !malePool.isEmpty
+        let hadFemalePool = !femalePool.isEmpty
         if malePool.isEmpty { malePool = Array((neutralPool + femalePool).prefix(2)) }
         if femalePool.isEmpty { femalePool = Array((neutralPool + malePool).prefix(2)) }
         if neutralPool.isEmpty { neutralPool = poolBase }
 
-        var out: [String: AVSpeechSynthesisVoice] = [:]
+        var voices: [String: AVSpeechSynthesisVoice] = [:]
+        var pitches: [String: Float] = [:]
         var mi = 0, fi = 0, ni = 0
         for role in roles {
+            let pitch: Float
             switch role.gender {
             case .male:
-                if !malePool.isEmpty { out[role.id] = malePool[mi % malePool.count]; mi += 1 }
+                if !malePool.isEmpty {
+                    voices[role.id] = malePool[mi % malePool.count]; mi += 1
+                }
+                pitch = hadMalePool ? 1.0 : 0.85   // 无男声素材 → 低音高补偿
             case .female:
-                if !femalePool.isEmpty { out[role.id] = femalePool[fi % femalePool.count]; fi += 1 }
+                if !femalePool.isEmpty {
+                    voices[role.id] = femalePool[fi % femalePool.count]; fi += 1
+                }
+                pitch = hadFemalePool ? 1.0 : 1.12 // 无女声素材 → 高音高补偿
             case .neutral:
-                if !neutralPool.isEmpty { out[role.id] = neutralPool[ni % neutralPool.count]; ni += 1 }
+                if !neutralPool.isEmpty {
+                    voices[role.id] = neutralPool[ni % neutralPool.count]; ni += 1
+                }
+                pitch = 1.0
             }
+            pitches[role.id] = pitch
         }
         // 补漏（池被借空等极端情况）
-        for role in roles where out[role.id] == nil {
+        for role in roles where voices[role.id] == nil {
             if !poolBase.isEmpty {
-                out[role.id] = poolBase[abs(role.id.hashValue) % poolBase.count]
+                voices[role.id] = poolBase[abs(role.id.hashValue) % poolBase.count]
             }
         }
-        return out
+        return (voices, pitches)
     }
 
     /// 按文本语言选声（自动切声开启时生效）。
@@ -235,7 +253,9 @@ final class TTSPlayer: NSObject, ObservableObject {
             }
             let prosody = seg.emotion.prosody(baseRate: internalRate)
             utterance.rate = prosody.rate
-            utterance.pitchMultiplier = prosody.pitch
+            // 音高 = 情绪音高 × 角色音高补偿（性别区分），限制在引擎允许范围
+            let rolePitch = rolePitches[seg.characterId ?? ""] ?? 1.0
+            utterance.pitchMultiplier = min(max(prosody.pitch * rolePitch, 0.5), 2.0)
         case .plain:
             utterance.voice = voiceForText(text) ?? defaultVoice
             utterance.rate = internalRate
