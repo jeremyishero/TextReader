@@ -138,10 +138,10 @@ struct ReadingView: View {
     private var feedbackOverlay: some View {
         // 规范：解析耗时可能超过 1 秒 → 全屏进度框（可取消）；静默回退/成功提示 → 轻提示；失败 → Alert
         if isAnalyzing {
-            BusyHUD(title: "正在解析人物与情绪，请稍候…") {
+            BusyHUD(title: "正在解析人物与情绪，请稍候…", onCancel: {
                 analysisTask?.cancel()
                 isAnalyzing = false
-            }
+            })
         } else if let toast {
             ToastView(text: toast, isErrorStyle: true)
         }
