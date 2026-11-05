@@ -50,6 +50,7 @@ struct AnalysisView: View {
     private enum DeleteTarget {
         case role(CharacterRole)
         case word(String, Panel)
+        case rule(CustomRule)
     }
 
     /// 可供选择的声音：简体中文普通话优先，最多 10 个（系统有几个就有几个）
