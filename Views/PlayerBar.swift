@@ -11,6 +11,7 @@ struct PlayerBar: View {
     let analysis: AnalysisResult?
     @Binding var useAnalyzed: Bool
     @Binding var startIndex: Int?   // 外部（ReadingView）传入的续读起点
+    var voiceOverrides: [String: String] = [:]   // 每文档声音配置：角色称呼 → 声音 identifier
 
     var body: some View {
         VStack(spacing: 8) {
@@ -88,8 +89,18 @@ struct PlayerBar: View {
         let cloud = cloudEnabled
 
         if useAnalyzed, let a = analysis, !a.segments.isEmpty {
-            // 按性别池 + 轮转分配：男女分声、同性别的不同角色声音不同、同角色全程固定
-            player.setRoleVoices(TTSPlayer.assignVoices(roles: a.roles))
+            // 先按性别池自动分配，再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
+            let autoAssign = TTSPlayer.assignVoices(roles: a.roles)
+            var map: [String: AVSpeechSynthesisVoice] = [:]
+            for role in a.roles {
+                if let identifier = voiceOverrides[role.canonicalName],
+                   let v = AVSpeechSynthesisVoice(identifier: identifier) {
+                    map[role.id] = v
+                } else {
+                    map[role.id] = autoAssign[role.id]
+                }
+            }
+            player.setRoleVoices(map)
             player.playSegments(a.segments, startIndex: start, cloud: cloud)
         } else {
             guard !text.isEmpty else { return }

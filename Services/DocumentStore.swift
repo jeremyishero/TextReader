@@ -137,6 +137,53 @@ func importFile(from url: URL) async throws {
         return (cache.result, cache.source)
     }
 
+    // MARK: 每文档声音配置与黑白名单（各文档互不影响；声音配置可跨文档导入）
+
+    private struct VoiceConfig: Codable { var assignments: [String: String] }   // 角色称呼 → 声音 identifier
+    private struct DocNameLists: Codable { var blacklist: [String] = []; var whitelist: [String] = [] }
+
+    private func voiceConfigURL(_ documentId: UUID) -> URL {
+        importsDir.appendingPathComponent("\(documentId.uuidString).voicecfg.json")
+    }
+    private func nameListsURL(_ documentId: UUID) -> URL {
+        importsDir.appendingPathComponent("\(documentId.uuidString).lists.json")
+    }
+
+    /// 保存某文档的声音配置（角色称呼 → 系统声音 identifier）。
+    func saveVoiceConfig(_ assignments: [String: String], for documentId: UUID) {
+        let cfg = VoiceConfig(assignments: assignments)
+        if let data = try? JSONEncoder().encode(cfg) {
+            try? data.write(to: voiceConfigURL(documentId), options: .atomic)
+        }
+    }
+
+    /// 读取某文档的声音配置；无则返回空表。
+    func loadVoiceConfig(for documentId: UUID) -> [String: String] {
+        guard let data = try? Data(contentsOf: voiceConfigURL(documentId)),
+              let cfg = try? JSONDecoder().decode(VoiceConfig.self, from: data) else { return [:] }
+        return cfg.assignments
+    }
+
+    /// 保存某文档的人名黑白名单。
+    func saveNameLists(black: [String], white: [String], for documentId: UUID) {
+        let lists = DocNameLists(blacklist: black, whitelist: white)
+        if let data = try? JSONEncoder().encode(lists) {
+            try? data.write(to: nameListsURL(documentId), options: .atomic)
+        }
+    }
+
+    /// 读取某文档的人名黑白名单。
+    func loadNameLists(for documentId: UUID) -> (black: [String], white: [String]) {
+        guard let data = try? Data(contentsOf: nameListsURL(documentId)),
+              let lists = try? JSONDecoder().decode(DocNameLists.self, from: data) else { return ([], []) }
+        return (lists.blacklist, lists.whitelist)
+    }
+
+    /// 有已保存声音配置的其他文档（供「导入其他文档的人物配置」选择）。
+    func documentsWithVoiceConfig(excluding documentId: UUID) -> [DocumentItem] {
+        documents.filter { $0.id != documentId && fm.fileExists(atPath: voiceConfigURL($0.id).path) }
+    }
+
     // MARK: 删除
 
     func delete(_ offsets: IndexSet) {
@@ -145,6 +192,8 @@ func importFile(from url: URL) async throws {
             let file = importsDir.appendingPathComponent(item.storedFileName)
             try? fm.removeItem(at: file)
             try? fm.removeItem(at: analysisURL(item.id))
+            try? fm.removeItem(at: voiceConfigURL(item.id))
+            try? fm.removeItem(at: nameListsURL(item.id))
         }
         documents.remove(atOffsets: offsets)
         saveIndex()

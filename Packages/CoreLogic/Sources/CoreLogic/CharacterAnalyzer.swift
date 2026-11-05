@@ -82,16 +82,18 @@ public struct CharacterAnalyzer {
 
     // MARK: 主入口
 
-    public func analyze(_ text: String, userStopwords: Set<String> = []) -> AnalysisResult {
+    public func analyze(_ text: String, userStopwords: Set<String> = [], userWhitelist: Set<String> = []) -> AnalysisResult {
         let units = segmentText(text)
         // 内置停用词 + 用户自定义过滤名单（设置页维护；名单中的词不可能是名字）
         let blocked = Self.nameStopwords.union(userStopwords)
+        // 用户白名单：一定是人名/称呼。清洗/准入/碎片检查全部豁免，且旁白中出现即注册。
+        let whitelist = userWhitelist
 
         // ---- Pass 1：说话人候选计数（所有长度；三字及以上构成「长名」） ----
         var speakerCounts: [String: Int] = [:]
         for unit in units {
             if case .dialogue(_, let preceding) = unit {
-                if let raw = resolveSpeaker(preceding, blocked: blocked), raw != "他", raw != "她" {
+                if let raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist), raw != "他", raw != "她" {
                     speakerCounts[raw, default: 0] += 1
                 }
             }
@@ -145,9 +147,13 @@ public struct CharacterAnalyzer {
         for unit in units {
             if case .narration(let t) = unit {
                 for cand in scanNarration(t) {
-                    if let c = cleanCandidate(cand, blocked: blocked), c != "他", c != "她" {
+                    if let c = cleanCandidate(cand, blocked: blocked, whitelist: whitelist), c != "他", c != "她" {
                         narrationCounts[c, default: 0] += 1
                     }
+                }
+                // 白名单词出现即计数（不依赖姓氏扫描，如「大爷」「老王」等称谓）
+                for w in whitelist where t.contains(w) {
+                    narrationCounts[w, default: 0] += 1
                 }
             }
         }
@@ -157,6 +163,8 @@ public struct CharacterAnalyzer {
         }
         func admitted(_ c: String?) -> Bool {
             guard let c, c != "他", c != "她" else { return false }
+            // 白名单词一定是人名，直接准入
+            if whitelist.contains(c) { return true }
             switch c.count {
             case 2:
                 // 旁白 + 说话人 总出现 ≥2 次（垃圾已被清洗/停用词/长名占位拦截）
@@ -168,6 +176,7 @@ public struct CharacterAnalyzer {
             }
         }
         func isFragment(_ c: String) -> Bool {
+            if whitelist.contains(c) { return false }
             for l in longNames where l.count > c.count && l.contains(c) {
                 if (totalCounts[c] ?? 0) < (totalCounts[l] ?? 0) { return true }
             }
@@ -267,9 +276,14 @@ public struct CharacterAnalyzer {
             case .narration(let t):
                 if isChapterMarker(t) { sceneRecent.removeAll() }
                 for cand in scanNarration(t) {
-                    let c = cleanCandidate(cand, blocked: blocked)
+                    let c = cleanCandidate(cand, blocked: blocked, whitelist: whitelist)
                     guard let name = c, name != "他", name != "她", admitted(name), !isFragment(name) else { continue }
                     let id = registerOrMerge(surface: name)
+                    ensureSceneRecent(id)
+                }
+                // 白名单词在旁白中出现即注册（不依赖姓氏扫描）
+                for w in whitelist where t.contains(w) {
+                    let id = registerOrMerge(surface: w)
                     ensureSceneRecent(id)
                 }
                 segments.append(SpeechSegment(id: "seg_\(segIndex)", text: t, characterId: nil, emotion: .neutral, position: segIndex))
@@ -278,7 +292,7 @@ public struct CharacterAnalyzer {
             case .dialogue(let quote, let preceding):
                 let emotion = EmotionLexicon.detect(before: preceding, quote: quote)
                 var speakerId: String? = nil
-                var raw = resolveSpeaker(preceding, blocked: blocked)
+                var raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist)
                 if raw == nil {
                     raw = fallbackSpeaker(in: preceding)
                 }
@@ -375,10 +389,11 @@ public struct CharacterAnalyzer {
     }
 
     /// 候选清洗：剥尾部说话动词噪声 → 剥头部虚词 → 长度 2–3 → 不含虚词 → 非处所后缀 → 不在停用词表。
-    /// blocked = 内置停用词 + 用户自定义过滤名单。
-    private func cleanCandidate(_ raw: String?, blocked: Set<String>) -> String? {
+    /// blocked = 内置停用词 + 用户自定义过滤名单；whitelist 命中则原样放行（用户确认为人名/称呼）。
+    private func cleanCandidate(_ raw: String?, blocked: Set<String>, whitelist: Set<String> = []) -> String? {
         guard var r = raw, !r.isEmpty else { return nil }
         if r == "他" || r == "她" { return r }
+        if whitelist.contains(r) { return r }
         while let last = r.last, Self.tailNoise.contains(last) { r.removeLast() }
         while let first = r.first, Self.funcChars.contains(first) { r.removeFirst() }
         guard r.count >= 2, r.count <= 3 else { return nil }
@@ -390,7 +405,7 @@ public struct CharacterAnalyzer {
 
     /// 从引语前的叙述里找最近一次「X [+地/得/了] + 说话提示」，返回 X（已清洗）。
     /// 副词修饰（「眉飞色舞地道」「缓缓地说」）与量词前缀（「一张脸说」）的捕获不可靠，跳过。
-    private func resolveSpeaker(_ preceding: String, blocked: Set<String>) -> String? {
+    private func resolveSpeaker(_ preceding: String, blocked: Set<String>, whitelist: Set<String> = []) -> String? {
         let last = String(preceding.suffix(min(preceding.count, 40)))
         let pattern = "([\\u4e00-\\u9fa5]{1,4})([地得了]?)(?:\(speechCues))"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
@@ -405,7 +420,7 @@ public struct CharacterAnalyzer {
             if start > 0, Self.measurePrev.contains(Character(ns.substring(with: NSRange(location: start - 1, length: 1)))) {
                 continue
             }
-            if let c = cleanCandidate(ns.substring(with: m.range(at: 1)), blocked: blocked) {
+            if let c = cleanCandidate(ns.substring(with: m.range(at: 1)), blocked: blocked, whitelist: whitelist) {
                 out = c
                 break
             }

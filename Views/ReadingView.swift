@@ -24,6 +24,10 @@ struct ReadingView: View {
     @State private var analysisTask: Task<Void, Never>?
     @State private var highlightIndex: Int?             // 正在朗读的段落
     @State private var segmentToParagraph: [String: Int] = [:]   // 朗读段 → 段落索引缓存（避免重复扫描与跳段）
+    @State private var showModeDialog = false           // 整体解析：先选择本地/云端
+    @State private var voiceOverrides: [String: String] = [:]    // 每文档声音配置：角色称呼 → 声音 identifier
+    @State private var docBlacklist: [String] = []      // 每文档人名黑名单
+    @State private var docWhitelist: [String] = []      // 每文档人名白名单
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,7 +69,7 @@ struct ReadingView: View {
                 }
             }
             Divider()
-            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart)
+            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides)
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -95,13 +99,56 @@ struct ReadingView: View {
         }
         .sheet(isPresented: $showAnalysis) {
             if let binding = Binding($analysis) {
-                AnalysisView(analysis: binding, onEdited: {
-                    // 用户改名/删除角色后，把最新结果写回持久缓存（圆灯颜色不变）
-                    if let a = analysis {
-                        store.saveAnalysis(a, source: analysisSource ?? "local", for: item.id)
+                AnalysisView(
+                    analysis: binding,
+                    blacklisted: docBlacklist,
+                    whitelisted: docWhitelist,
+                    voiceOverrides: voiceOverrides,
+                    otherDocuments: store.documentsWithVoiceConfig(excluding: item.id),
+                    onEdited: {
+                        // 用户改名/删除角色后，把最新结果写回持久缓存（圆灯颜色不变）
+                        if let a = analysis {
+                            store.saveAnalysis(a, source: analysisSource ?? "local", for: item.id)
+                        }
+                    },
+                    onListsChanged: { black, white in
+                        docBlacklist = black
+                        docWhitelist = white
+                        store.saveNameLists(black: black, white: white, for: item.id)
+                    },
+                    onVoiceChanged: { assignments in
+                        voiceOverrides = assignments
+                        store.saveVoiceConfig(assignments, for: item.id)
+                    },
+                    onImportConfig: { sourceDoc in
+                        // 从其他文档导入人物配置：按角色称呼匹配，只影响当前文档
+                        let cfg = store.loadVoiceConfig(for: sourceDoc.id)
+                        var merged = voiceOverrides
+                        if let a = analysis {
+                            for role in a.roles {
+                                if let v = cfg[role.canonicalName] {
+                                    merged[role.canonicalName] = v
+                                }
+                            }
+                        }
+                        voiceOverrides = merged
+                        store.saveVoiceConfig(merged, for: item.id)
+                        showToast("已导入「\(sourceDoc.name)」的人物声音配置（仅对本文档生效）")
                     }
-                })
+                )
             }
+        }
+        .confirmationDialog(
+            "选择解析方式",
+            isPresented: $showModeDialog,
+            titleVisibility: .visible
+        ) {
+            Button("本地解析（离线 · 快）") { runAnalysis(mode: .local) }
+            Button("云端解析（更准 · 需网络与 API Key）") { runAnalysis(mode: .cloud) }
+                .disabled(!(settings.cloudLLMEnabled && !settings.cloudLLMApiKey.isEmpty))
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("云端解析未配置或失败时，将自动回退本地解析并提示原因。")
         }
         .task { loadText() }
         .onAppear { configurePlayer() }
@@ -121,7 +168,7 @@ struct ReadingView: View {
     @ToolbarContentBuilder
     private var readerToolbar: some ToolbarContent {
         ToolbarItem(placement: .navigationBarTrailing) {
-            Button("整体解析") { runAnalysis() }
+            Button("整体解析") { showModeDialog = true }
                 .disabled(isAnalyzing || text.isEmpty)
         }
         // 解析状态指示灯：灰=未解析，蓝=本地解析，绿=云端解析；点击显示状态文字
@@ -169,6 +216,11 @@ struct ReadingView: View {
             analysisSource = cached.source
             useAnalyzed = true
         }
+        // 恢复每文档的声音配置与黑白名单
+        voiceOverrides = store.loadVoiceConfig(for: item.id)
+        let lists = store.loadNameLists(for: item.id)
+        docBlacklist = lists.black
+        docWhitelist = lists.white
         // 若朗读仍在进行（如从后台/锁屏返回），立即把高亮同步到当前位置
         syncHighlightNow()
     }
@@ -272,13 +324,17 @@ struct ReadingView: View {
 
     // MARK: 整体解析
 
-    private func runAnalysis() {
+    private enum AnalysisMode { case local, cloud }
+
+    private func runAnalysis(mode: AnalysisMode) {
         isAnalyzing = true
         let src = text
-        let useCloud = settings.cloudLLMEnabled && !settings.cloudLLMApiKey.isEmpty
+        let useCloud = (mode == .cloud) && settings.cloudLLMEnabled && !settings.cloudLLMApiKey.isEmpty
         let apiKey = settings.cloudLLMApiKey
         let endpoint = settings.cloudLLMEndpoint
         let model = settings.cloudLLMModel
+        let combinedBlocklist = userBlocklist.union(docBlacklist)
+        let combinedWhitelist = Set(docWhitelist)
         analysisTask = Task {
             var result: AnalysisResult?
             var cloudFailed = false
@@ -294,9 +350,10 @@ struct ReadingView: View {
                 }
             }
             if result == nil {
-                let blocklist = userBlocklist
+                let blocklist = combinedBlocklist
+                let allowlist = combinedWhitelist
                 result = await Task.detached(priority: .userInitiated) {
-                    CharacterAnalyzer().analyze(src, userStopwords: blocklist)
+                    CharacterAnalyzer().analyze(src, userStopwords: blocklist, userWhitelist: allowlist)
                 }.value
             }
             guard !Task.isCancelled else { return }
