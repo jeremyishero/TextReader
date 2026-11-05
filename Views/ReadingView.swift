@@ -5,6 +5,7 @@ struct ReadingView: View {
     @EnvironmentObject var store: DocumentStore
     @EnvironmentObject var settings: AppSettings
     @EnvironmentObject var player: TTSPlayer
+    @Environment(\.scenePhase) private var scenePhase
     let item: DocumentItem
 
     @State private var text: String = ""
@@ -22,6 +23,7 @@ struct ReadingView: View {
     @State private var toastTask: Task<Void, Never>?
     @State private var analysisTask: Task<Void, Never>?
     @State private var highlightIndex: Int?             // 正在朗读的段落
+    @State private var segmentToParagraph: [String: Int] = [:]   // 朗读段 → 段落索引缓存（避免重复扫描与跳段）
 
     var body: some View {
         VStack(spacing: 0) {
@@ -134,6 +136,10 @@ struct ReadingView: View {
         }
         .task { loadText() }
         .onAppear { configurePlayer() }
+        .onChange(of: scenePhase) { phase in
+            // 从后台/锁屏回到前台时，立即把高亮同步到当前朗读位置
+            if phase == .active { syncHighlightNow() }
+        }
         .onDisappear {
             saveProgressNow()
             player.onIndexChange = nil
@@ -150,23 +156,48 @@ struct ReadingView: View {
         paragraphs = t.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        // 恢复该文档此前保存的解析结果与小圆灯颜色（重进/重启不丢失）
+        if let cached = store.loadAnalysis(for: item.id) {
+            analysis = cached.result
+            analysisSource = cached.source
+            useAnalyzed = true
+        }
+        // 若朗读仍在进行（如从后台/锁屏返回），立即把高亮同步到当前位置
+        syncHighlightNow()
     }
 
     // MARK: 朗读高亮
 
-    /// 找到当前朗读文本所在的段落：优先从上次位置向后找（朗读是顺序推进的），失败再从头找。
+    /// 找到当前朗读文本所在的段落：先查缓存，未命中则从上次位置向后找（朗读是顺序推进的），失败再从头找。
+    /// 找到后写入缓存：同一段文本永远映射到同一段落，避免重复扫描与高亮来回跳动。
     private func paragraphIndex(for speaking: String) -> Int? {
         let key = String(speaking.trimmingCharacters(in: .whitespacesAndNewlines).prefix(12))
         guard !key.isEmpty else { return nil }
+        if let cached = segmentToParagraph[key] { return cached }
+        var found: Int? = nil
         if let last = highlightIndex, paragraphs.indices.contains(last), paragraphs[last].contains(key) {
-            return last
+            found = last
         }
-        let start = (highlightIndex ?? -1) + 1
-        if start < paragraphs.count,
-           let i = paragraphs[start...].firstIndex(where: { $0.contains(key) }) {
-            return i
+        if found == nil {
+            let start = (highlightIndex ?? -1) + 1
+            if start < paragraphs.count,
+               let i = paragraphs[start...].firstIndex(where: { $0.contains(key) }) {
+                found = i
+            }
         }
-        return paragraphs.firstIndex(where: { $0.contains(key) })
+        if found == nil {
+            found = paragraphs.firstIndex(where: { $0.contains(key) })
+        }
+        if let f = found { segmentToParagraph[key] = f }
+        return found
+    }
+
+    /// 回到前台 / 界面恢复时立即同步高亮到当前朗读位置（不等下一次段落切换事件）。
+    private func syncHighlightNow() {
+        guard let speaking = player.nowSpeakingText, !speaking.isEmpty else { return }
+        if let idx = paragraphIndex(for: speaking) {
+            highlightIndex = idx
+        }
     }
 
     // MARK: 解析状态灯
@@ -231,15 +262,20 @@ struct ReadingView: View {
         let src = text
         let useCloud = settings.cloudLLMEnabled && !settings.cloudLLMApiKey.isEmpty
         let apiKey = settings.cloudLLMApiKey
+        let endpoint = settings.cloudLLMEndpoint
+        let model = settings.cloudLLMModel
         analysisTask = Task {
             var result: AnalysisResult?
             var cloudFailed = false
+            var cloudError = ""
             if useCloud {
                 do {
-                    // 优先云端（更准）；失败回退本地并提示
-                    result = try await CloudAnalyzer().analyze(src, apiKey: apiKey)
+                    // 优先云端（更准）；失败回退本地并提示原因
+                    result = try await CloudAnalyzer().analyze(src, apiKey: apiKey,
+                                                               baseURL: endpoint, model: model)
                 } catch {
                     cloudFailed = true
+                    cloudError = error.localizedDescription
                 }
             }
             if result == nil {
@@ -250,15 +286,18 @@ struct ReadingView: View {
             guard !Task.isCancelled else { return }
             guard let res = result else {
                 isAnalyzing = false
-                analysisErrorMessage = "解析失败：本地解析与云端解析均未成功。请检查网络连接，或到设置页确认云端 API Key 是否有效后重试。"
+                analysisErrorMessage = "解析失败：本地解析与云端解析均未成功。请检查网络连接，或到设置页确认端点 / API Key / 模型是否正确后重试。"
                 return
             }
             analysis = res
             analysisSource = (useCloud && !cloudFailed) ? "cloud" : "local"
             useAnalyzed = true
             isAnalyzing = false
+            // 解析结果按文档持久化：重进/重启后结果与圆灯颜色不丢失
+            store.saveAnalysis(res, source: analysisSource ?? "local", for: item.id)
             if cloudFailed {
-                showToast("云端解析失败，已使用本地解析结果")
+                let brief = cloudError.count > 50 ? String(cloudError.prefix(50)) + "…" : cloudError
+                showToast("云端解析失败（\(brief)），已使用本地解析结果")
             }
             showAnalysis = true
         }

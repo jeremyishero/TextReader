@@ -88,11 +88,8 @@ struct PlayerBar: View {
         let cloud = cloudEnabled
 
         if useAnalyzed, let a = analysis, !a.segments.isEmpty {
-            var map: [String: AVSpeechSynthesisVoice] = [:]
-            for role in a.roles {
-                map[role.id] = TTSPlayer.pickVoice(preferGender: role.gender)
-            }
-            player.setRoleVoices(map)
+            // 按性别池 + 轮转分配：男女分声、同性别的不同角色声音不同、同角色全程固定
+            player.setRoleVoices(TTSPlayer.assignVoices(roles: a.roles))
             player.playSegments(a.segments, startIndex: start, cloud: cloud)
         } else {
             guard !text.isEmpty else { return }

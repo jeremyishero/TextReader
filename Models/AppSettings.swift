@@ -21,7 +21,10 @@ final class AppSettings: ObservableObject {
 
     // MARK: 云端 LLM 解析
     @Published var cloudLLMEnabled: Bool = false { didSet { save("cloudLLMEnabled", cloudLLMEnabled) } }
+    /// OpenAI 兼容的 chat/completions 接口地址（可换成任意兼容服务商）
+    @Published var cloudLLMEndpoint: String = "https://api.openai.com/v1/chat/completions" { didSet { save("cloudLLMEndpoint", cloudLLMEndpoint) } }
     @Published var cloudLLMApiKey: String = "" { didSet { save("cloudLLMApiKey", cloudLLMApiKey) } }
+    @Published var cloudLLMModel: String = "gpt-4o-mini" { didSet { save("cloudLLMModel", cloudLLMModel) } }
 
     // MARK: 云端 TTS 备选通道
     @Published var cloudTTSEnabled: Bool = false { didSet { save("cloudTTSEnabled", cloudTTSEnabled) } }
@@ -51,7 +54,9 @@ final class AppSettings: ObservableObject {
         voiceEn = d.string(forKey: "voiceEn")
         if d.object(forKey: "autoVoiceSwitch") != nil { autoVoiceSwitch = d.bool(forKey: "autoVoiceSwitch") }
         if d.object(forKey: "cloudLLMEnabled") != nil { cloudLLMEnabled = d.bool(forKey: "cloudLLMEnabled") }
+        if let e = d.string(forKey: "cloudLLMEndpoint"), !e.isEmpty { cloudLLMEndpoint = e }
         cloudLLMApiKey = d.string(forKey: "cloudLLMApiKey") ?? ""
+        if let m = d.string(forKey: "cloudLLMModel"), !m.isEmpty { cloudLLMModel = m }
         if d.object(forKey: "cloudTTSEnabled") != nil { cloudTTSEnabled = d.bool(forKey: "cloudTTSEnabled") }
         if let e = d.string(forKey: "cloudTTSEndpoint"), !e.isEmpty { cloudTTSEndpoint = e }
         cloudTTSApiKey = d.string(forKey: "cloudTTSApiKey") ?? ""

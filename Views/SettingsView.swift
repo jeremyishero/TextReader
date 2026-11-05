@@ -68,8 +68,16 @@ struct SettingsView: View {
 
                 Section("云端 LLM 解析（可选 · 更高准确度）") {
                     Toggle("启用云端解析", isOn: $settings.cloudLLMEnabled)
+                    TextField("接口端点（OpenAI 兼容 /chat/completions）",
+                              text: $settings.cloudLLMEndpoint)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                     SecureField("API Key", text: $settings.cloudLLMApiKey)
-                    Text("开启后，「整体解析」会先尝试调用云端大模型；文本内容将发送至你配置的接口。失败时自动回退本地引擎。")
+                    TextField("模型（如 gpt-4o-mini / deepseek-chat）", text: $settings.cloudLLMModel)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("开启后，「整体解析」会先尝试调用云端大模型；文本内容将发送至你配置的接口。失败时自动回退本地引擎并以轻提示告知原因。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }

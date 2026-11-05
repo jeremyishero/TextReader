@@ -65,6 +65,55 @@ final class TTSPlayer: NSObject, ObservableObject {
     func setDefaultVoice(_ v: AVSpeechSynthesisVoice?) { defaultVoice = v }
     func setLanguageVoices(_ map: [ScriptLanguage: AVSpeechSynthesisVoice]) { languageVoices = map }
 
+    /// 按性别池 + 轮转为各角色分配声音：
+    /// - 男角色从「男声池」取、女角色从「女声池」取、中性/未知从「中性池」取；
+    /// - 同一性别的不同角色依次轮转池内不同声音（男 A / 男 B 声音不同）；
+    /// - 按 role.id 分配一次，同一角色（含所有别名）全程固定同一声音；
+    /// - 池为空时借用其他池兜底，保证每个角色都有声音。
+    /// 声音性别依据系统声音名称中的 Male/Female/男/女 关键词（注意先判 Female 再判 Male）。
+    static func assignVoices(roles: [CharacterRole]) -> [String: AVSpeechSynthesisVoice] {
+        let all = AVSpeechSynthesisVoice.speechVoices()
+        let zh = all.filter { $0.language.hasPrefix("zh") }
+        let poolBase = zh.isEmpty ? all : zh
+
+        var malePool: [AVSpeechSynthesisVoice] = []
+        var femalePool: [AVSpeechSynthesisVoice] = []
+        var neutralPool: [AVSpeechSynthesisVoice] = []
+        for v in poolBase {
+            let n = v.name
+            if n.contains("Female") || n.contains("female") || n.contains("女") {
+                femalePool.append(v)
+            } else if n.contains("Male") || n.contains("male") || n.contains("男") {
+                malePool.append(v)
+            } else {
+                neutralPool.append(v)
+            }
+        }
+        if malePool.isEmpty { malePool = Array((neutralPool + femalePool).prefix(2)) }
+        if femalePool.isEmpty { femalePool = Array((neutralPool + malePool).prefix(2)) }
+        if neutralPool.isEmpty { neutralPool = poolBase }
+
+        var out: [String: AVSpeechSynthesisVoice] = [:]
+        var mi = 0, fi = 0, ni = 0
+        for role in roles {
+            switch role.gender {
+            case .male:
+                if !malePool.isEmpty { out[role.id] = malePool[mi % malePool.count]; mi += 1 }
+            case .female:
+                if !femalePool.isEmpty { out[role.id] = femalePool[fi % femalePool.count]; fi += 1 }
+            case .neutral:
+                if !neutralPool.isEmpty { out[role.id] = neutralPool[ni % neutralPool.count]; ni += 1 }
+            }
+        }
+        // 补漏（池被借空等极端情况）
+        for role in roles where out[role.id] == nil {
+            if !poolBase.isEmpty {
+                out[role.id] = poolBase[abs(role.id.hashValue) % poolBase.count]
+            }
+        }
+        return out
+    }
+
     /// 按文本语言选声（自动切声开启时生效）。
     private func voiceForText(_ text: String) -> AVSpeechSynthesisVoice? {
         guard autoVoiceSwitch, !languageVoices.isEmpty else { return nil }
@@ -185,6 +234,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     private func advance() {
+        // 停止后仍可能收到上一次朗读的完成回调，此时不得推进下一段（否则表现为「停了又继续读」）
+        guard isPlaying else { return }
         currentIndex += 1
         speakCurrent()
     }

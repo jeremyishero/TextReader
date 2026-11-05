@@ -111,6 +111,32 @@ func importFile(from url: URL) async throws {
 
     func progress(for item: DocumentItem) -> ReadingProgress? { item.progress }
 
+    // MARK: 解析结果缓存（按文档持久化，重进/重启不丢失）
+
+    private struct AnalysisCache: Codable {
+        let result: AnalysisResult
+        let source: String   // "cloud" / "local"
+    }
+
+    private func analysisURL(_ documentId: UUID) -> URL {
+        importsDir.appendingPathComponent("\(documentId.uuidString).analysis.json")
+    }
+
+    /// 保存某文档的整体解析结果与来源（小圆灯颜色依据）。
+    func saveAnalysis(_ result: AnalysisResult, source: String, for documentId: UUID) {
+        let cache = AnalysisCache(result: result, source: source)
+        if let data = try? JSONEncoder().encode(cache) {
+            try? data.write(to: analysisURL(documentId), options: .atomic)
+        }
+    }
+
+    /// 读取某文档已保存的解析结果；无则返回 nil（小圆灯为灰）。
+    func loadAnalysis(for documentId: UUID) -> (result: AnalysisResult, source: String)? {
+        guard let data = try? Data(contentsOf: analysisURL(documentId)),
+              let cache = try? JSONDecoder().decode(AnalysisCache.self, from: data) else { return nil }
+        return (cache.result, cache.source)
+    }
+
     // MARK: 删除
 
     func delete(_ offsets: IndexSet) {
@@ -118,6 +144,7 @@ func importFile(from url: URL) async throws {
             let item = documents[i]
             let file = importsDir.appendingPathComponent(item.storedFileName)
             try? fm.removeItem(at: file)
+            try? fm.removeItem(at: analysisURL(item.id))
         }
         documents.remove(atOffsets: offsets)
         saveIndex()
