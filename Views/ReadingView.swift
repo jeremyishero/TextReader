@@ -94,7 +94,14 @@ struct ReadingView: View {
             Text(statusMessage ?? "")
         }
         .sheet(isPresented: $showAnalysis) {
-            if let a = analysis { AnalysisView(analysis: a) }
+            if let binding = Binding($analysis) {
+                AnalysisView(analysis: binding, onEdited: {
+                    // 用户改名/删除角色后，把最新结果写回持久缓存（圆灯颜色不变）
+                    if let a = analysis {
+                        store.saveAnalysis(a, source: analysisSource ?? "local", for: item.id)
+                    }
+                })
+            }
         }
         .task { loadText() }
         .onAppear { configurePlayer() }
@@ -246,6 +253,14 @@ struct ReadingView: View {
 
     // MARK: 轻提示
 
+    /// 解析设置页的人名过滤名单（逗号/顿号/空格/换行分隔）
+    private var userBlocklist: Set<String> {
+        Set(settings.nameBlocklist
+            .split(whereSeparator: { "，,、 ;；\n\r\t".contains($0) })
+            .map(String.init)
+            .filter { !$0.isEmpty })
+    }
+
     private func showToast(_ text: String) {
         toast = text
         toastTask?.cancel()
@@ -279,8 +294,9 @@ struct ReadingView: View {
                 }
             }
             if result == nil {
+                let blocklist = userBlocklist
                 result = await Task.detached(priority: .userInitiated) {
-                    CharacterAnalyzer().analyze(src)
+                    CharacterAnalyzer().analyze(src, userStopwords: blocklist)
                 }.value
             }
             guard !Task.isCancelled else { return }

@@ -19,6 +19,9 @@ final class AppSettings: ObservableObject {
     /// 中英混读/简繁混排时按段自动切换对应声音
     @Published var autoVoiceSwitch: Bool = true { didSet { save("autoVoiceSwitch", autoVoiceSwitch) } }
 
+    /// 人名过滤名单：名单中的词（逗号/顿号/空格/换行分隔）永远不会被识别为角色名
+    @Published var nameBlocklist: String = "" { didSet { save("nameBlocklist", nameBlocklist) } }
+
     // MARK: 云端 LLM 解析
     @Published var cloudLLMEnabled: Bool = false { didSet { save("cloudLLMEnabled", cloudLLMEnabled) } }
     /// OpenAI 兼容的 chat/completions 接口地址（可换成任意兼容服务商）
@@ -53,6 +56,7 @@ final class AppSettings: ObservableObject {
         voiceZhHant = d.string(forKey: "voiceZhHant")
         voiceEn = d.string(forKey: "voiceEn")
         if d.object(forKey: "autoVoiceSwitch") != nil { autoVoiceSwitch = d.bool(forKey: "autoVoiceSwitch") }
+        if let b = d.string(forKey: "nameBlocklist") { nameBlocklist = b }
         if d.object(forKey: "cloudLLMEnabled") != nil { cloudLLMEnabled = d.bool(forKey: "cloudLLMEnabled") }
         if let e = d.string(forKey: "cloudLLMEndpoint"), !e.isEmpty { cloudLLMEndpoint = e }
         cloudLLMApiKey = d.string(forKey: "cloudLLMApiKey") ?? ""

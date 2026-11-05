@@ -66,6 +66,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     func setLanguageVoices(_ map: [ScriptLanguage: AVSpeechSynthesisVoice]) { languageVoices = map }
 
     /// 按性别池 + 轮转为各角色分配声音：
+    /// - 声音池优先简体中文普通话（zh-CN），其次 zh-Hans，再退到 zh 系列，避免选到粤/台口音读出「洋腔洋调」；
     /// - 男角色从「男声池」取、女角色从「女声池」取、中性/未知从「中性池」取；
     /// - 同一性别的不同角色依次轮转池内不同声音（男 A / 男 B 声音不同）；
     /// - 按 role.id 分配一次，同一角色（含所有别名）全程固定同一声音；
@@ -73,8 +74,10 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 声音性别依据系统声音名称中的 Male/Female/男/女 关键词（注意先判 Female 再判 Male）。
     static func assignVoices(roles: [CharacterRole]) -> [String: AVSpeechSynthesisVoice] {
         let all = AVSpeechSynthesisVoice.speechVoices()
-        let zh = all.filter { $0.language.hasPrefix("zh") }
-        let poolBase = zh.isEmpty ? all : zh
+        var poolBase = all.filter { $0.language == "zh-CN" }
+        if poolBase.isEmpty { poolBase = all.filter { $0.language.hasPrefix("zh-Hans") } }
+        if poolBase.isEmpty { poolBase = all.filter { $0.language.hasPrefix("zh") } }
+        if poolBase.isEmpty { poolBase = all }
 
         var malePool: [AVSpeechSynthesisVoice] = []
         var femalePool: [AVSpeechSynthesisVoice] = []
@@ -187,8 +190,16 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     /// 本地合成（AVSpeechSynthesizer）。显示语速 × rateScale 换算为内部标度。
+    /// 块尾带 "\n"（TextChunker 段落标记）→ 修剪并在读完后插入明显停顿，实现「按段停顿」。
     private func speakLocal(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
+        var content = text
+        var postDelay: TimeInterval = 0.06
+        if content.hasSuffix(TextChunker.paragraphBreakMarker) {
+            content.removeLast()
+            postDelay = 0.45
+        }
+        let utterance = AVSpeechUtterance(string: content)
+        utterance.postUtteranceDelay = postDelay
         let internalRate = rate * Self.rateScale
         switch mode {
         case .segments:

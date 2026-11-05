@@ -48,6 +48,14 @@ struct SettingsView: View {
                     Text("英文声音与混读切声")
                 }
 
+                Section("人名过滤名单（解析优化）") {
+                    TextEditor(text: $settings.nameBlocklist)
+                        .frame(minHeight: 80)
+                        .autocorrectionDisabled()
+                    Text("填入明确不是人名的词，用逗号、顿号、空格或换行分隔（如：很快，胡扯，安静）。解析时这些词将永远不被识别为角色。修改后需重新「整体解析」生效。")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+
                 Section("云端 TTS 备选通道（可选）") {
                     Toggle("启用云端 TTS", isOn: $settings.cloudTTSEnabled)
                     TextField("接口端点（OpenAI 兼容 /audio/speech）",
