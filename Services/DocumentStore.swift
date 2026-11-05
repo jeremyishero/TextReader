@@ -36,15 +36,16 @@ final class DocumentStore: ObservableObject {
 enum ImportError: LocalizedError {
     /// 无法读取/复制所选文件（未授权安全作用域、文件被移动或删除、iCloud 未下载等）。
     case copyFailed(underlying: Error)
-    /// 文件复制成功但提取不到任何文本（损坏、加密、空文件）。
-    case noTextExtracted
+    /// 文件复制成功但提取不到任何文本（损坏、加密、空文件、不支持的编码）。
+    case noTextExtracted(ext: String, bytes: Int64)
 
     var errorDescription: String? {
         switch self {
         case .copyFailed(let e):
             return "无法读取所选文件：\(e.localizedDescription)。请确认文件仍存在、未被移动，若来自 iCloud 请先确认已下载到本机后重试。"
-        case .noTextExtracted:
-            return "导入失败：未能从该文件中提取到文本内容。文件可能已损坏、被加密，或内容为空。"
+        case .noTextExtracted(let ext, let bytes):
+            let sizeDesc = bytes >= 1024 ? "\(bytes / 1024) KB" : "\(bytes) 字节"
+            return "导入失败：未能从 .\(ext) 文件（\(sizeDesc)）中提取到文本内容。文件可能已损坏、被口令加密，或使用了不支持的文本编码。可尝试用电脑上的编辑器将文件另存为 UTF-8 编码后重新导入。"
         }
     }
 }
@@ -77,8 +78,10 @@ func importFile(from url: URL) async throws {
 
     guard let text = extracted.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
         // 提取不到文本：清理已复制的文件，不给列表留垃圾条目
+        let attr = try? fm.attributesOfItem(atPath: dest.path)
+        let bytes = (attr?[.size] as? NSNumber)?.int64Value ?? 0
         try? fm.removeItem(at: dest)
-        throw ImportError.noTextExtracted
+        throw ImportError.noTextExtracted(ext: ext, bytes: bytes)
     }
 
     let item = DocumentItem(
@@ -125,6 +128,8 @@ func importFile(from url: URL) async throws {
     /// 逐页提取文本；无文本层的页（扫描版）自动 OCR。nonisolated static：供后台线程调用，不触碰实例状态。
     private nonisolated static func extractPDFText(_ url: URL, ocrUsed: inout Bool) -> String? {
         guard let doc = PDFDocument(url: url) else { return nil }
+        // 空口令加密的 PDF（其他阅读器可自动打开）先尝试解锁
+        if doc.isLocked && !doc.unlock(withPassword: "") { return nil }
         var out = ""
         for i in 0..<doc.pageCount {
             guard let page = doc.page(at: i) else { continue }

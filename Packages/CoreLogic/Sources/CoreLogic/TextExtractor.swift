@@ -18,7 +18,9 @@ public struct TextExtractor {
         }
     }
 
-    /// txt / 未知类型：优先 UTF-8，失败回退 NSString 编码探测（兼容 GBK 等），再试 UTF-16。
+    /// txt / 未知类型：依次尝试 UTF-8 → NSString 编码探测（兼容 GBK 等）→ UTF-16
+    /// → 显式 GB18030（GBK/GB2312 超集）→ Big5 → Windows-1252。
+    /// 国内旧编码中文 txt（GBK/GB2312）系统自动探测常识别失败，需显式解码。
     public func extractPlainText(_ url: URL) -> String? {
         if let s = try? String(contentsOf: url, encoding: .utf8), !s.isEmpty { return s }
         let path = url.path
@@ -26,6 +28,21 @@ public struct TextExtractor {
         if let s = try? NSString(contentsOfFile: path, usedEncoding: &enc) as String, !s.isEmpty {
             return s
         }
-        return try? String(contentsOf: url, encoding: .utf16)
+        if let s = try? String(contentsOf: url, encoding: .utf16), !s.isEmpty { return s }
+        for e in Self.chineseLegacyEncodings {
+            if let s = try? String(contentsOf: url, encoding: e), !s.isEmpty { return s }
+        }
+        return nil
     }
+
+    /// 显式的中文旧编码列表（GB18030 为 GBK/GB2312 的超集）。
+    private static let chineseLegacyEncodings: [String.Encoding] = {
+        var encs: [String.Encoding] = []
+        let raw = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+        if raw != UInt(kCFStringEncodingInvalidId) { encs.append(String.Encoding(rawValue: raw)) }
+        let big5 = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.big5.rawValue))
+        if big5 != UInt(kCFStringEncodingInvalidId) { encs.append(String.Encoding(rawValue: big5)) }
+        encs.append(.windowsCP1252)
+        return encs
+    }()
 }
