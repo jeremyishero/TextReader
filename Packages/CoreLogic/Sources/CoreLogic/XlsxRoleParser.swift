@@ -44,14 +44,14 @@ public struct XlsxRoleParser {
         let grid = Self.parseSheet(data, sharedStrings: sharedStrings)
         guard !grid.isEmpty else { return [] }
 
-        // 3) 按表头映射列
+        // 3) 按表头映射列（注意顺序：「性别」包含「别」字，必须先判性别再判别名）
         let header = grid[0]
         var nameCol = -1, aliasCol = -1, genderCol = -1, noteCol = -1
         for (i, h) in header.enumerated() {
             let key = h.trimmingCharacters(in: .whitespacesAndNewlines)
             if key.contains("姓名") || key.contains("名字") { nameCol = i }
-            else if key.contains("别") { aliasCol = i }               // 别名 / 别称 / 别名/身份
             else if key.contains("性别") { genderCol = i }
+            else if key.contains("别") || key.contains("身份") { aliasCol = i }   // 别名 / 别称 / 别名/身份
             else if key.contains("性格") || key.contains("特点") || key.contains("备注") { noteCol = i }
         }
         guard nameCol >= 0 else { return [] }
