@@ -4,8 +4,10 @@ import SwiftUI
 // 规范：任何预计超过 1 秒的操作必须显示 BusyHUD；成功用轻提示 Toast；失败用 Alert 给出准确原因。
 
 /// 居中模态进度框：用于导入/OCR/云端请求等超过 1 秒的操作。
+/// 可选取消按钮：供长耗时操作（如云端解析）让用户中途退出，避免界面一直被阻塞。
 struct BusyHUD: View {
     let title: String
+    var onCancel: (() -> Void)? = nil
 
     var body: some View {
         ZStack {
@@ -18,6 +20,11 @@ struct BusyHUD: View {
                     .font(.callout)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.primary)
+                if let onCancel {
+                    Button("取消", action: onCancel)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
             }
             .padding(26)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
