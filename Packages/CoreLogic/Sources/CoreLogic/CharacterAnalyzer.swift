@@ -58,8 +58,9 @@ public struct AnalysisResult: Codable {
 /// 4. 候选清洗：剥尾部说话动词噪声、剥头部虚词、含虚词/处所后缀/停用词的一律拒绝。
 public struct CharacterAnalyzer {
 
-    /// 说话提示词（出现在引语前，用于定位说话人）
-    private let speechCues = "说|道|曰|问|答|喊|叫|笑|怒道|冷笑|大喝|厉声|低声|轻声|高声|叹|哭|喜|愤|应|回|劝|禀|奏|言|吟|呼|唤|喝|骂|斥|吼|咆哮|叱|瞪|咬牙|道：|说："
+    /// 说话提示词（出现在引语前，用于定位说话人）。
+    /// 含口语化说话动词（扯/嘀咕/嘟囔/念叨等），覆盖「慕容衍一边躲一边继续鬼扯，"…」这类动作引语。
+    private let speechCues = "说|道|曰|问|答|喊|叫|笑|怒道|冷笑|大喝|厉声|低声|轻声|高声|叹|哭|喜|愤|应|回|劝|禀|奏|言|吟|呼|唤|喝|骂|斥|吼|咆哮|叱|瞪|咬牙|扯|嘀咕|嘟囔|嘟哝|念叨|咕哝|嚷|吩咐|补充|道：|说："
     /// 去除姓名前后称谓/敬语，得到基名。
     private let trailingTitles = ["娘子","丫鬟","少爷","老爷","夫人","王爷","相公","女侠","仙子","侠士","老爷子","公主","郡主","皇后","太后","妃","妾","妻","姊","妹","嫂","姑","婆","姨","婶","媳","女儿","姐","弟","叔","伯","舅","父","夫","兄","哥","郎","爹","爸","爷","子","婿","郎君","将军","殿下"]
     /// 描述词 → 性别（那少年 / 那女子 等）
@@ -187,6 +188,7 @@ public struct CharacterAnalyzer {
         var roles: [CharacterRole] = []
         var aliasToRole: [String: String] = [:]
         var sceneRecent: [String] = []   // 当前场景内最近出现过的角色 id（用于代词/描述词回指）
+        var lastDialogueSpeaker: String? = nil   // 上一句台词的说话人（「他说」优先指他）
         var segments: [SpeechSegment] = []
         var segIndex = 0
 
@@ -242,15 +244,26 @@ public struct CharacterAnalyzer {
             aliasToRole[surface] = id
             return id
         }
-        /// 解析代词（他/她）到最近同性别角色
+        /// 解析代词（他/她）到最近同性别角色。
+        /// 「……。"他说，"」紧跟引语的「他」优先指上一个说话的人（同一人物）。
         func resolvePronoun(_ p: String) -> String? {
+            let want: Gender? = (p == "她") ? .female : .male
+            if let last = lastDialogueSpeaker {
+                if let g = roleGender(last) {
+                    if want == nil || g == want { return last }
+                } else {
+                    return last
+                }
+            }
             if p == "她" {
                 return sceneRecent.last(where: { roleGender($0) == .female })
             } else {
                 return sceneRecent.last(where: { roleGender($0) == .male }) ?? sceneRecent.last
             }
         }
-        /// 说话人兜底：在引语前的短窗口内找已知角色名/别名、描述词或代词，取最后出现者；同位置取最长匹配。
+        /// 说话人兜底：在引语前的短窗口内找已知角色名/别名、描述词或代词。
+        /// 两级优先：先看**角色正式名称**（canonical）中最后出现者——动作句（「慕容衍一边躲一边继续鬼扯，"…」）
+        /// 的说话人是句首的动作主体，不能被句中后出现的杂词/别名（如「鬼扯」）抢走；找不到再退到别名/描述词/代词。
         func fallbackSpeaker(in preceding: String) -> String? {
             let tail = String(preceding.suffix(min(preceding.count, 24)))
             var best: (pos: Int, len: Int, name: String)? = nil
@@ -261,8 +274,11 @@ public struct CharacterAnalyzer {
                     best = (pos, name.count, name)
                 }
             }
+            // 第一优先：角色正式名称
+            for role in roles { consider(role.canonicalName) }
+            if let b = best { return b.name }
+            // 第二优先：别名 / 描述词 / 代词
             for role in roles {
-                consider(role.canonicalName)
                 for a in role.aliases { consider(a) }
             }
             for k in descriptorGender.keys { consider(k) }
@@ -318,7 +334,10 @@ public struct CharacterAnalyzer {
                         speakerId = registerOrMerge(surface: raw)
                     }
                 }
-                if let id = speakerId { ensureSceneRecent(id) }
+                if let id = speakerId {
+                    ensureSceneRecent(id)
+                    lastDialogueSpeaker = id
+                }
                 segments.append(SpeechSegment(id: "seg_\(segIndex)", text: quote, characterId: speakerId, emotion: emotion, position: segIndex))
                 segIndex += 1
             }

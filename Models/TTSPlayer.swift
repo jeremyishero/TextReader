@@ -223,6 +223,8 @@ final class TTSPlayer: NSObject, ObservableObject {
         let utterance = AVSpeechUtterance(string: content)
         utterance.postUtteranceDelay = postDelay
         let internalRate = rate * Self.rateScale
+        // 音量统一为最大：不同系统声音本身响度不同，情绪音量浮动会造成「一时大一时小」，全部固定 1.0
+        utterance.volume = 1.0
         switch mode {
         case .segments:
             let seg = segments[currentIndex]
@@ -234,7 +236,6 @@ final class TTSPlayer: NSObject, ObservableObject {
             let prosody = seg.emotion.prosody(baseRate: internalRate)
             utterance.rate = prosody.rate
             utterance.pitchMultiplier = prosody.pitch
-            utterance.volume = prosody.volume
         case .plain:
             utterance.voice = voiceForText(text) ?? defaultVoice
             utterance.rate = internalRate

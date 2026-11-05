@@ -46,6 +46,10 @@ struct AnalysisView: View {
     @State private var ruleFindDraft = ""
     @State private var ruleReplaceDraft = ""
     @State private var editingRuleFind: String? = nil     // nil = 新增；否则为编辑既有规则
+    // 从文本导入角色
+    @State private var showTextImportSheet = false
+    @State private var importText = ""
+    @State private var importSummary: String? = nil
 
     private enum DeleteTarget {
         case role(CharacterRole)
@@ -132,6 +136,17 @@ struct AnalysisView: View {
             .sheet(isPresented: $showImportSheet) {
                 importSheet
             }
+            .sheet(isPresented: $showTextImportSheet) {
+                textImportSheet
+            }
+            .alert("导入完成", isPresented: Binding(
+                get: { importSummary != nil },
+                set: { if !$0 { importSummary = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(importSummary ?? "")
+            }
         }
     }
 
@@ -198,11 +213,19 @@ struct AnalysisView: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(otherDocuments.isEmpty)
-                if otherDocuments.isEmpty {
-                    Text("暂无其他已配置文档")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                Button {
+                    importText = ""
+                    showTextImportSheet = true
+                } label: {
+                    Label("从文本导入角色", systemImage: "doc.text")
+                        .font(.caption)
                 }
+                .buttonStyle(.bordered)
+            }
+            if otherDocuments.isEmpty {
+                Text("暂无其他已配置文档（可使用「从文本导入角色」）")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
             if analysis.roles.isEmpty {
                 Text("未识别到明确角色，将按旁白朗读。").foregroundColor(.secondary)
@@ -521,6 +544,148 @@ struct AnalysisView: View {
             analysis.roles[idx].aliases.append(old)
         }
         onEdited?()
+    }
+
+    // MARK: 从文本导入角色定义
+
+    private var textImportSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("格式（每段一个人物）：")
+                    .font(.caption).foregroundColor(.secondary)
+                Text("人物：慕容衍，性别：男\n别称：慕容公子、殿下")
+                    .font(.caption.monospaced())
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+                TextEditor(text: $importText)
+                    .frame(minHeight: 180)
+                    .overlay(
+                        Group {
+                            if importText.isEmpty {
+                                Text("在此粘贴角色定义…")
+                                    .foregroundColor(.secondary)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                    .padding(8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    )
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(.systemGray4)))
+                Button {
+                    applyImportedRoles(parseImportedRoles(importText))
+                } label: {
+                    Label("解析并导入", systemImage: "tray.and.arrow.down.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("从文本导入角色")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") { showTextImportSheet = false }
+                }
+            }
+        }
+    }
+
+    /// 解析「人物：X，性别：男/女 + 别称：…」格式的文本。容错：性别缺失视为中性；
+    /// 别称行支持顿号/逗号分隔多个；未写「人物」前缀但含性别/单独成行的名字也可识别为人物行。
+    private func parseImportedRoles(_ text: String) -> [(name: String, gender: Gender, aliases: [String])] {
+        var result: [(name: String, gender: Gender, aliases: [String])] = []
+        var current: (name: String, gender: Gender, aliases: [String])? = nil
+
+        func flush() {
+            if let c = current, !c.name.isEmpty { result.append(c) }
+            current = nil
+        }
+        func parseGender(_ s: String) -> Gender {
+            if s.contains("女") { return .female }
+            if s.contains("男") { return .male }
+            return .neutral
+        }
+        func parsePersonLine(_ line: String) {
+            flush()
+            // 去掉「人物」前缀与冒号
+            var body = line
+            if body.hasPrefix("人物") { body = String(body.dropFirst(2)) }
+            body = body.trimmingCharacters(in: CharacterSet(charactersIn: "：: "))
+            var name = body
+            var gender: Gender = .neutral
+            if let r = body.range(of: "性别") {
+                let before = String(body[..<r.lowerBound]).trimmingCharacters(in: CharacterSet(charactersIn: "，, "))
+                let after = String(body[r.lowerBound...])
+                name = before
+                gender = parseGender(after)
+            } else if body.hasSuffix("男") || body.hasSuffix("女") {
+                gender = body.hasSuffix("女") ? .female : .male
+                name = String(body.dropLast(1)).trimmingCharacters(in: CharacterSet(charactersIn: "，, "))
+            }
+            name = name.trimmingCharacters(in: CharacterSet(charactersIn: "，, "))
+            if !name.isEmpty { current = (name, gender, []) }
+        }
+
+        for rawLine in importText.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            if line.hasPrefix("人物") {
+                parsePersonLine(line)
+            } else if line.hasPrefix("别称") || line.hasPrefix("别名") {
+                var body = line
+                if body.hasPrefix("别称") || body.hasPrefix("别名") { body = String(body.dropFirst(2)) }
+                body = body.trimmingCharacters(in: CharacterSet(charactersIn: "：: "))
+                let aliases = body.split(whereSeparator: { "，,、;；/ ".contains($0) })
+                    .map(String.init).filter { !$0.isEmpty }
+                current?.aliases.append(contentsOf: aliases)
+            } else if line.contains("性别") {
+                parsePersonLine(line)
+            }
+        }
+        flush()
+        return result
+    }
+
+    /// 把导入的角色合并进当前解析结果：按称呼匹配已有角色则合并（补别名/更新性别），否则新建。
+    private func applyImportedRoles(_ parsed: [(name: String, gender: Gender, aliases: [String])]) {
+        guard !parsed.isEmpty else {
+            importSummary = "没有解析到任何角色。请检查格式：\n人物：X，性别：男/女\n别称：…"
+            return
+        }
+        var created = 0, merged = 0
+        for p in parsed {
+            if let idx = analysis.roles.firstIndex(where: {
+                $0.canonicalName == p.name || $0.aliases.contains(p.name) || p.aliases.contains($0.canonicalName)
+            }) {
+                var role = analysis.roles[idx]
+                for a in p.aliases + [p.name] where a != role.canonicalName && !role.aliases.contains(a) {
+                    role.aliases.append(a)
+                }
+                if p.gender != .neutral {
+                    role.gender = p.gender
+                    role.voiceHint = p.gender == .male ? "male" : "female"
+                }
+                analysis.roles[idx] = role
+                merged += 1
+            } else {
+                let hint: String? = p.gender == .male ? "male" : (p.gender == .female ? "female" : "neutral")
+                analysis.roles.append(CharacterRole(
+                    id: "role_imp_\(analysis.roles.count)_\(p.name)",
+                    canonicalName: p.name,
+                    aliases: p.aliases,
+                    gender: p.gender,
+                    voiceHint: hint
+                ))
+                created += 1
+            }
+        }
+        onEdited?()
+        showTextImportSheet = false
+        importSummary = "导入完成：新建 \(created) 个角色，合并 \(merged) 个已有角色。"
     }
 
     // MARK: 导入其他文档配置
