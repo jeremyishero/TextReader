@@ -53,6 +53,13 @@ struct AnalysisView: View {
     @State private var importSummary: String? = nil
     // 从表格(.xlsx)导入角色
     @State private var showXlsxImporter = false
+    // 导入方式二选一：替换所有已存在角色 / 新增到现有角色
+    @State private var showImportModeDialog = false
+    @State private var pendingImport: [(name: String, gender: Gender, aliases: [String])]? = nil
+    // 角色多选删除（长按进入）
+    @State private var multiSelectMode = false
+    @State private var selectedRoleIds: Set<String> = []
+    @State private var showMultiDeleteConfirm = false
 
     private enum DeleteTarget {
         case role(CharacterRole)
@@ -158,6 +165,25 @@ struct AnalysisView: View {
                     importSummary = "打开文件选择器失败：\(error.localizedDescription)"
                 }
             }
+            .confirmationDialog(
+                "选择导入方式",
+                isPresented: $showImportModeDialog,
+                titleVisibility: .visible
+            ) {
+                Button("替换所有已存在角色", role: .destructive) { applyImport(replaceExisting: true) }
+                Button("新增到现有角色") { applyImport(replaceExisting: false) }
+                Button("取消", role: .cancel) { pendingImport = nil }
+            } message: {
+                Text("「替换」将删除当前所有已存在角色，改用导入的角色；「新增」将导入角色合并进现有角色（按称呼匹配）。")
+            }
+            .confirmationDialog(
+                multiDeleteMessage,
+                isPresented: $showMultiDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("删除", role: .destructive, action: executeMultiDelete)
+                Button("取消", role: .cancel) {}
+            }
             .alert("导入完成", isPresented: Binding(
                 get: { importSummary != nil },
                 set: { if !$0 { importSummary = nil } }
@@ -226,36 +252,59 @@ struct AnalysisView: View {
 
     private var rolesPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
-            panelHeader("角色（\(analysis.roles.count)）")
+            // 标题行：多选模式下右上角变为「取消 / 删除(N)」
             HStack {
-                Button {
-                    showImportSheet = true
-                } label: {
-                    Label("导入其他文档配置", systemImage: "square.and.arrow.down")
-                        .font(.caption)
+                panelHeader("角色（\(analysis.roles.count)）")
+                Spacer()
+                if multiSelectMode {
+                    Button("取消") {
+                        multiSelectMode = false
+                        selectedRoleIds = []
+                    }
+                    .font(.caption)
+                    Button {
+                        showMultiDeleteConfirm = true
+                    } label: {
+                        Label("删除(\(selectedRoleIds.count))", systemImage: "trash")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(selectedRoleIds.isEmpty)
                 }
-                .buttonStyle(.bordered)
-                .disabled(otherDocuments.isEmpty)
             }
-            HStack {
-                Button {
-                    importText = ""
-                    showTextImportSheet = true
-                } label: {
-                    Label("从文本导入角色", systemImage: "doc.text")
-                        .font(.caption)
+            if !multiSelectMode {
+                HStack {
+                    Button {
+                        showImportSheet = true
+                    } label: {
+                        Label("导入其他文档配置", systemImage: "square.and.arrow.down")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(otherDocuments.isEmpty)
                 }
-                .buttonStyle(.bordered)
-                Button {
-                    showXlsxImporter = true
-                } label: {
-                    Label("从表格导入(.xlsx)", systemImage: "tablecells")
-                        .font(.caption)
+                HStack {
+                    Button {
+                        importText = ""
+                        showTextImportSheet = true
+                    } label: {
+                        Label("从文本导入角色", systemImage: "doc.text")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    Button {
+                        showXlsxImporter = true
+                    } label: {
+                        Label("从表格导入(.xlsx)", systemImage: "tablecells")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
-            }
-            if otherDocuments.isEmpty {
-                Text("暂无其他已配置文档（可使用文本/表格导入角色）")
+                Text("长按任一角色可进入多选批量删除")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("已选 \(selectedRoleIds.count) 个角色，点右上角「删除」批量删除")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -284,39 +333,47 @@ struct AnalysisView: View {
     private func roleRow(_ role: CharacterRole, index: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
+                // 多选模式：左侧复选框
+                if multiSelectMode {
+                    Image(systemName: selectedRoleIds.contains(role.id) ? "checkmark.circle.fill" : "circle")
+                        .font(.body)
+                        .foregroundColor(selectedRoleIds.contains(role.id) ? .accentColor : .secondary)
+                }
                 Text("\(index + 1). \(role.canonicalName)")
                     .font(.headline)
                 Spacer()
-                Text(genderLabel(role.gender))
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(genderColor(role.gender).opacity(0.15))
-                    .foregroundColor(genderColor(role.gender))
-                    .cornerRadius(5)
-                Button {
-                    renamingRole = role
-                    renameText = role.canonicalName
-                    showRenameAlert = true
-                } label: {
-                    Image(systemName: "pencil").font(.caption)
+                if !multiSelectMode {
+                    Text(genderLabel(role.gender))
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(genderColor(role.gender).opacity(0.15))
+                        .foregroundColor(genderColor(role.gender))
+                        .cornerRadius(5)
+                    Button {
+                        renamingRole = role
+                        renameText = role.canonicalName
+                        showRenameAlert = true
+                    } label: {
+                        Image(systemName: "pencil").font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    Button {
+                        deleteTarget = .role(role)
+                        showDeleteConfirm = true
+                    } label: {
+                        Image(systemName: "trash").font(.caption).foregroundColor(.red)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
-                Button {
-                    deleteTarget = .role(role)
-                    showDeleteConfirm = true
-                } label: {
-                    Image(systemName: "trash").font(.caption).foregroundColor(.red)
-                }
-                .buttonStyle(.borderless)
             }
             if !role.aliases.isEmpty {
                 Text("别名：" + role.aliases.joined(separator: "、"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
-            // 前 10 个角色可单独选择声音（系统声音不足 10 个则有几个设几个）
-            if index < 10, !voiceOptions.isEmpty {
+            // 前 10 个角色可单独选择声音（多选模式下隐藏，系统声音不足 10 个则有几个设几个）
+            if !multiSelectMode, index < 10, !voiceOptions.isEmpty {
                 Picker("声音", selection: voiceBinding(for: role)) {
                     Text("自动分配").tag(String?.none)
                     ForEach(voiceOptions, id: \.identifier) { v in
@@ -327,6 +384,37 @@ struct AnalysisView: View {
             }
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onLongPressGesture {
+            // 长按任一角色：进入多选模式并选中该角色
+            multiSelectMode = true
+            selectedRoleIds = [role.id]
+        }
+        .onTapGesture {
+            if multiSelectMode {
+                if selectedRoleIds.contains(role.id) {
+                    selectedRoleIds.remove(role.id)
+                } else {
+                    selectedRoleIds.insert(role.id)
+                }
+            }
+        }
+        .background(multiSelectMode && selectedRoleIds.contains(role.id) ? Color.accentColor.opacity(0.08) : Color.clear)
+    }
+
+    /// 批量删除确认框文案
+    private var multiDeleteMessage: String {
+        "确认要删除 \(selectedRoleIds.count) 个角色吗？被删角色的台词将改由旁白（中性声）朗读。"
+    }
+
+    private func executeMultiDelete() {
+        analysis.roles.removeAll { selectedRoleIds.contains($0.id) }
+        for i in analysis.segments.indices where analysis.segments[i].characterId.map({ selectedRoleIds.contains($0) }) == true {
+            analysis.segments[i].characterId = nil
+        }
+        onEdited?()
+        multiSelectMode = false
+        selectedRoleIds = []
     }
 
     // MARK: 黑白名单面板
@@ -606,7 +694,7 @@ struct AnalysisView: View {
                     )
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(.systemGray4)))
                 Button {
-                    applyImportedRoles(parseImportedRoles(importText))
+                    requestImport(parseImportedRoles(importText))
                 } label: {
                     Label("解析并导入", systemImage: "tray.and.arrow.down.fill")
                         .frame(maxWidth: .infinity)
@@ -622,6 +710,18 @@ struct AnalysisView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("关闭") { showTextImportSheet = false }
                 }
+            }
+            // Sheet 内也能弹导入方式选择（root 上那份在 Sheet 打开时不生效）
+            .confirmationDialog(
+                "选择导入方式",
+                isPresented: $showImportModeDialog,
+                titleVisibility: .visible
+            ) {
+                Button("替换所有已存在角色", role: .destructive) { applyImport(replaceExisting: true) }
+                Button("新增到现有角色") { applyImport(replaceExisting: false) }
+                Button("取消", role: .cancel) { pendingImport = nil }
+            } message: {
+                Text("「替换」将删除当前所有已存在角色，改用导入的角色；「新增」将导入角色合并进现有角色（按称呼匹配）。")
             }
         }
     }
@@ -682,49 +782,74 @@ struct AnalysisView: View {
         return result
     }
 
-    /// 把导入的角色合并进当前解析结果：按「导入姓名 = 已有角色名/别名」匹配合并（补别名/更新性别），否则新建。
-    /// 注意：别名中若与**其他角色的正式名称**冲突（如「吴七」既是独立角色又是慕容衍的伪装身份），跳过该别名，避免串角色。
-    private func applyImportedRoles(_ parsed: [(name: String, gender: Gender, aliases: [String])]) {
+    /// 导入入口：解析成功后先暂存，弹出「替换 / 新增」二选一
+    private func requestImport(_ parsed: [(name: String, gender: Gender, aliases: [String])]) {
         guard !parsed.isEmpty else {
-            importSummary = "没有解析到任何角色。请检查格式：\n人物：X，性别：男/女\n别称：…"
+            importSummary = "没有解析到任何角色。请检查格式：\n人物：X，性别：男/女\n别称：…\n或表格含「姓名」「性别」列。"
             return
         }
-        var created = 0, merged = 0
-        for p in parsed {
-            if let idx = analysis.roles.firstIndex(where: {
-                $0.canonicalName == p.name || $0.aliases.contains(p.name)
-            }) {
-                var role = analysis.roles[idx]
-                // 其他角色的正式名称不能作为本角色的别名（防止「吴七（伪装）」把两人混成一人）
-                let otherNames = Set(analysis.roles.filter { $0.id != role.id }.map { $0.canonicalName })
-                for a in p.aliases + [p.name]
-                where a != role.canonicalName && !role.aliases.contains(a) && !otherNames.contains(a) {
-                    role.aliases.append(a)
-                }
-                if p.gender != .neutral {
-                    role.gender = p.gender
-                    role.voiceHint = p.gender == .male ? "male" : "female"
-                }
-                analysis.roles[idx] = role
-                merged += 1
-            } else {
-                // 新建角色的别名同样不能撞其他角色的正式名称
-                let otherNames = Set(analysis.roles.map { $0.canonicalName })
-                let safeAliases = p.aliases.filter { !otherNames.contains($0) }
+        pendingImport = parsed
+        showImportModeDialog = true
+    }
+
+    /// 执行导入：replaceExisting = true 删除所有已存在角色用导入替代；false 合并进现有角色。
+    private func applyImport(replaceExisting: Bool) {
+        guard let parsed = pendingImport else { return }
+        pendingImport = nil
+
+        if replaceExisting {
+            var newRoles: [CharacterRole] = []
+            for (i, p) in parsed.enumerated() {
                 let hint: String? = p.gender == .male ? "male" : (p.gender == .female ? "female" : "neutral")
-                analysis.roles.append(CharacterRole(
-                    id: "role_imp_\(analysis.roles.count)_\(p.name)",
+                newRoles.append(CharacterRole(
+                    id: "role_imp_\(i)_\(p.name)",
                     canonicalName: p.name,
-                    aliases: safeAliases,
+                    aliases: p.aliases,
                     gender: p.gender,
                     voiceHint: hint
                 ))
-                created += 1
             }
+            analysis.roles = newRoles
+            visibleRoleCount = 10
+            importSummary = "已删除原有角色，替换为导入的 \(newRoles.count) 个角色。"
+        } else {
+            var created = 0, merged = 0
+            for p in parsed {
+                if let idx = analysis.roles.firstIndex(where: {
+                    $0.canonicalName == p.name || $0.aliases.contains(p.name)
+                }) {
+                    var role = analysis.roles[idx]
+                    // 其他角色的正式名称不能作为本角色的别名（防止「吴七（伪装）」把两人混成一人）
+                    let otherNames = Set(analysis.roles.filter { $0.id != role.id }.map { $0.canonicalName })
+                    for a in p.aliases + [p.name]
+                    where a != role.canonicalName && !role.aliases.contains(a) && !otherNames.contains(a) {
+                        role.aliases.append(a)
+                    }
+                    if p.gender != .neutral {
+                        role.gender = p.gender
+                        role.voiceHint = p.gender == .male ? "male" : "female"
+                    }
+                    analysis.roles[idx] = role
+                    merged += 1
+                } else {
+                    // 新建角色的别名同样不能撞其他角色的正式名称
+                    let otherNames = Set(analysis.roles.map { $0.canonicalName })
+                    let safeAliases = p.aliases.filter { !otherNames.contains($0) }
+                    let hint: String? = p.gender == .male ? "male" : (p.gender == .female ? "female" : "neutral")
+                    analysis.roles.append(CharacterRole(
+                        id: "role_imp_\(analysis.roles.count)_\(p.name)",
+                        canonicalName: p.name,
+                        aliases: safeAliases,
+                        gender: p.gender,
+                        voiceHint: hint
+                    ))
+                    created += 1
+                }
+            }
+            importSummary = "导入完成：新建 \(created) 个角色，合并 \(merged) 个已有角色。"
         }
         onEdited?()
         showTextImportSheet = false
-        importSummary = "导入完成：新建 \(created) 个角色，合并 \(merged) 个已有角色。"
     }
 
     // MARK: 从表格（.xlsx）导入角色
@@ -741,7 +866,7 @@ struct AnalysisView: View {
             importSummary = "未能从该表格解析到角色。请确认是人物解析表（含「姓名」「性别」列的工作表）。"
             return
         }
-        applyImportedRoles(parsed.map { (name: $0.name, gender: $0.gender, aliases: $0.aliases) })
+        requestImport(parsed.map { (name: $0.name, gender: $0.gender, aliases: $0.aliases) })
     }
 
     // MARK: 导入其他文档配置
