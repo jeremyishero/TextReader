@@ -62,7 +62,15 @@ final class OfflineTTSManager: ObservableObject {
         .init(id: "fanchen-unity", repo: "csukuangfj/vits-zh-hf-fanchen-unity",
               displayName: "Fanchen-unity · 试听确认", gender: "试听确认", sizeMB: 115),
         .init(id: "aishell3", repo: "csukuangfj/icefall-tts-aishell3-vits-low-2024-04-06",
-              displayName: "AISHELL3 · 多音色 174 人（男女都有）", gender: "多音色", sizeMB: 100),
+              displayName: "AISHELL3 · 多音色 174 人（男女都有）", gender: "多音色", sizeMB: 30),
+        .init(id: "abyssinvoker", repo: "csukuangfj/vits-zh-hf-abyssinvoker",
+              displayName: "深渊咏者 · 男声（候选）", gender: "男声", sizeMB: 115),
+        .init(id: "doom", repo: "csukuangfj/vits-zh-hf-doom",
+              displayName: "Doom · 试听确认", gender: "试听确认", sizeMB: 115),
+        .init(id: "zhihuilaozhe", repo: "csukuangfj/vits-zh-hf-fanchen-ZhiHuiLaoZhe",
+              displayName: "智慧老者 · 男声长者（候选）", gender: "男声", sizeMB: 114),
+        .init(id: "zh-ll", repo: "csukuangfj/sherpa-onnx-vits-zh-ll",
+              displayName: "LL · 试听确认", gender: "试听确认", sizeMB: 113),
     ]
 
     private let fm = FileManager.default

@@ -50,6 +50,8 @@ final class AppSettings: ObservableObject {
         "eula": "female", "bronya": "female", "echo": "female",
         "zenyatta": "male", "fanchen-c": "male", "fanchen-unity": "",
         "aishell3": "multi",
+        "abyssinvoker": "male", "zhihuilaozhe": "male",
+        "doom": "", "zh-ll": "",
     ] { didSet { persistPackGenders() } }
 
     init() { load() }

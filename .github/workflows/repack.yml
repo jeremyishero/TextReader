@@ -1,0 +1,43 @@
+name: Repack TTS voice packs (tar.bz2 -> zip for App import)
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ '.github/workflows/repack.yml' ]
+  workflow_dispatch:
+
+jobs:
+  repack:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - id: zhihuilaozhe
+            url: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-zh-hf-fanchen-ZhiHuiLaoZhe.tar.bz2
+          - id: zh-ll
+            url: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-vits-zh-ll.tar.bz2
+          - id: chaowen
+            url: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-zh_CN-chaowen-medium-int8.tar.bz2
+          - id: aishell3
+            url: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2
+    steps:
+      - name: Download and repack ${{ matrix.id }}
+        run: |
+          curl -sL --fail -o p.tar.bz2 "${{ matrix.url }}"
+          tar xjf p.tar.bz2
+          src=$(find . -maxdepth 1 -type d ! -name '.' ! -name 'diag*' | grep -v '^.$' | head -1)
+          echo "src dir: $src"
+          mkdir -p "pack/${{ matrix.id }}"
+          # 把包内容平铺进以包 id 命名的文件夹（App 导入按根文件夹名识别）
+          cp -R "$src/." "pack/${{ matrix.id }}/"
+          # 兜底：若 tokens.txt 仍在顶层未拷到，再检查
+          ls "pack/${{ matrix.id }}" | head
+          zip -qry "voicepack-${{ matrix.id }}.zip" "pack/${{ matrix.id }}"
+          ls -la "voicepack-${{ matrix.id }}.zip"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicepack-${{ matrix.id }}
+          path: voicepack-${{ matrix.id }}.zip
+          retention-days: 30
