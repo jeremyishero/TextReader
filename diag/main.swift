@@ -1,7 +1,7 @@
 // 离线 TTS 诊断 harness：在 CI 的 macOS 上用与 App 相同的配置逻辑复现引擎初始化/合成。
 // 用法: diag_bin <pack_dir>
 import Foundation
-import sherpa_onnx
+import sherpa_capi
 
 func cstr(_ s: String) -> UnsafePointer<CChar>? { UnsafePointer(strdup(s)) }
 
@@ -9,11 +9,11 @@ let args = CommandLine.arguments
 let dir = args.count > 1 ? args[1] : "."
 let fm = FileManager.default
 let subpaths = fm.subpaths(atPath: dir) ?? []
-print("subpaths:", subpaths.sorted().prefix(40), flush: true)
+print("subpaths:", subpaths.sorted().prefix(40))
 
 let modelRel = subpaths.filter { $0.hasSuffix(".onnx") }.sorted().first
 let tokensRel = subpaths.filter { ($0 as NSString).lastPathComponent == "tokens.txt" }.sorted().first
-print("model:", modelRel ?? "NONE", "| tokens:", tokensRel ?? "NONE", flush: true)
+print("model:", modelRel ?? "NONE", "| tokens:", tokensRel ?? "NONE")
 guard let modelRel, let tokensRel else {
     print("DIAG_FAIL: missing model/tokens")
     exit(3)
@@ -24,11 +24,11 @@ vits.model = cstr(dir + "/" + modelRel)
 vits.tokens = cstr(dir + "/" + tokensRel)
 if let lex = subpaths.filter({ $0.hasSuffix("lexicon.txt") }).sorted().first {
     vits.lexicon = cstr(dir + "/" + lex)
-    print("lexicon:", lex, flush: true)
+    print("lexicon:", lex)
 }
 if subpaths.contains(where: { $0.hasPrefix("dict/") }) {
     vits.dict_dir = cstr(dir + "/dict")
-    print("dict_dir: dict/", flush: true)
+    print("dict_dir: dict/")
 }
 vits.noise_scale = 0.667
 vits.noise_scale_w = 0.8
@@ -47,17 +47,17 @@ let fsts = subpaths
     .sorted().map { dir + "/" + $0 }
 if !fsts.isEmpty {
     config.rule_fsts = cstr(fsts.joined(separator: ","))
-    print("rule_fsts:", fsts, flush: true)
+    print("rule_fsts:", fsts)
 }
 config.max_num_sentences = 2
 
-print("creating engine...", flush: true)
+print("creating engine...")
 guard let tts = SherpaOnnxCreateOfflineTts(&config) else {
     print("DIAG_FAIL: SherpaOnnxCreateOfflineTts returned NULL")
     exit(2)
 }
 print("created. sampleRate:", SherpaOnnxOfflineTtsSampleRate(tts),
-      "speakers:", SherpaOnnxOfflineTtsNumSpeakers(tts), flush: true)
+      "speakers:", SherpaOnnxOfflineTtsNumSpeakers(tts))
 
 let audio = SherpaOnnxOfflineTtsGenerate(tts, "你好，我是中国人", 0, 1.0)
 if let audio, audio.pointee.n > 0 {
