@@ -23,6 +23,7 @@ targets:
           - .github
           - .git
           - Vendor
+          - diag
           - "*.xcframework.zip"
           - README.md
           - Info.plist
