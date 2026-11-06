@@ -21,7 +21,9 @@ targets:
         excludes:
           - Packages
           - .github
+          - .git
           - Vendor
+          - "*.xcframework.zip"
           - README.md
           - Info.plist
     dependencies:
