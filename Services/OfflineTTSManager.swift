@@ -1,6 +1,6 @@
 import Foundation
 import AVFoundation
-import sherpa_onnx
+import sherpa_capi
 
 /// 可下载的离线语音包（模型来自 sherpa-onnx 社区，HuggingFace 托管，国内经 hf-mirror.com 镜像下载）。
 /// 代码许可 Apache-2.0；各模型许可见其仓库说明，均为可自由使用的开放模型。

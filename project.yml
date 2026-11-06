@@ -7,6 +7,8 @@ options:
 packages:
   CoreLogic:
     path: Packages/CoreLogic
+  SherpaCAPI:
+    path: Packages/SherpaCAPI
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.19
@@ -25,6 +27,7 @@ targets:
     dependencies:
       - package: CoreLogic
       - package: ZIPFoundation
+      - package: SherpaCAPI
       - framework: Vendor/sherpa-onnx.xcframework
         embed: false
       - framework: Vendor/onnxruntime.xcframework
