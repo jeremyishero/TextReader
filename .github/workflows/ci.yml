@@ -15,6 +15,17 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -switch /Applications/Xcode.app/Contents/Developer
 
+      - name: Download sherpa-onnx XCFrameworks (offline TTS)
+        run: |
+          mkdir -p Vendor
+          curl -L --fail -o sherpa.xcframework.zip \
+            https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/sherpa-onnx.xcframework.zip
+          curl -L --fail -o ort.xcframework.zip \
+            https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/onnxruntime.xcframework.zip
+          unzip -q -o sherpa.xcframework.zip -d Vendor
+          unzip -q -o ort.xcframework.zip -d Vendor
+          ls Vendor
+
       - name: Install xcodegen
         run: brew install xcodegen
 
