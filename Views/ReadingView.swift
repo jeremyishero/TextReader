@@ -30,6 +30,7 @@ struct ReadingView: View {
     @State private var docWhitelist: [String] = []      // 每文档人名白名单
     @State private var docRules: [CustomRule] = []      // 每文档自定义朗读规则（≤20 条）
     @State private var showTOC = false                  // 章节目录
+    @State private var restartToken = 0                 // 目录 ▶︎ 递增 → PlayerBar 立即从新起点重播
     @State private var chapterList: [(index: Int, title: String)] = []   // (段落索引, 章节标题)
 
     var body: some View {
@@ -78,7 +79,7 @@ struct ReadingView: View {
             Divider()
             PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides, onOpenTOC: {
                 showTOC = true
-            })
+            }, restartToken: restartToken)
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -286,12 +287,13 @@ struct ReadingView: View {
                                 .foregroundColor(.accentColor)
                         }
                         Spacer()
-                        // 从本章开始朗读：把章节段落映射为朗读分段起点
+                        // 从本章开始朗读：把章节段落映射为朗读分段起点，并立即开始播放
                         Button {
                             showTOC = false
                             if let seg = nearestSegmentIndex(forParagraph: ch.index) {
                                 pendingStart = seg
-                                showToast("已设置从「\(ch.title)」开始朗读，点播放生效")
+                                restartToken += 1   // 触发 PlayerBar 立即停止当前播放并从新起点开始
+                                showToast("正在从「\(ch.title)」开始朗读")
                             }
                         } label: {
                             Image(systemName: "play.circle")

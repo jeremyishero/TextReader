@@ -2,6 +2,33 @@ import Foundation
 import AVFoundation
 import CoreLogic
 
+/// 声音预听器：独立于播放器的合成器实例，用于「选定前先试听这个声音」。
+/// 全局共享单例，避免与朗读播放互相打断。
+@MainActor
+final class VoicePreviewer: ObservableObject {
+    static let shared = VoicePreviewer()
+    private let synth = AVSpeechSynthesizer()
+
+    /// 用指定声音说一句「你好，我是中国人」。voice 传 nil 时用简体中文默认声。
+    func preview(_ voice: AVSpeechSynthesisVoice?, rate: Float = 1.0, pitch: Float = 1.0) {
+        synth.stopSpeaking(at: .immediate)
+        let utterance = AVSpeechUtterance(string: "你好，我是中国人")
+        if let voice {
+            utterance.voice = voice
+        } else if let fallback = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.language == "zh-CN" }) {
+            utterance.voice = fallback
+        }
+        utterance.rate = min(max(rate * TTSPlayer.rateScale, 0.0), 1.0)
+        utterance.pitchMultiplier = min(max(pitch, 0.5), 2.0)
+        utterance.volume = 1.0
+        synth.speak(utterance)
+    }
+
+    func stop() {
+        synth.stopSpeaking(at: .immediate)
+    }
+}
+
 /// 自定义朗读规则（每文档最多 20 条）：朗读前把「匹配文本」替换为「替换文本」。
 /// 例：匹配「……」替换为「……无语」→ 人物说话出现省略号时会多读一句「无语」。
 struct CustomRule: Codable, Identifiable, Equatable {
@@ -133,12 +160,12 @@ final class TTSPlayer: NSObject, ObservableObject {
                 if !malePool.isEmpty {
                     voices[role.id] = malePool[mi % malePool.count]; mi += 1
                 }
-                pitch = hadMalePool ? 1.0 : 0.85   // 无男声素材 → 低音高补偿
+                pitch = hadMalePool ? 1.0 : 0.80   // 无男声素材 → 低音高补偿
             case .female:
                 if !femalePool.isEmpty {
                     voices[role.id] = femalePool[fi % femalePool.count]; fi += 1
                 }
-                pitch = hadFemalePool ? 1.0 : 1.12 // 无女声素材 → 高音高补偿
+                pitch = hadFemalePool ? 1.0 : 1.18 // 无女声素材 → 高音高补偿
             case .neutral:
                 if !neutralPool.isEmpty {
                     voices[role.id] = neutralPool[ni % neutralPool.count]; ni += 1

@@ -374,13 +374,24 @@ struct AnalysisView: View {
             }
             // 前 10 个角色可单独选择声音（多选模式下隐藏，系统声音不足 10 个则有几个设几个）
             if !multiSelectMode, index < 10, !voiceOptions.isEmpty {
-                Picker("声音", selection: voiceBinding(for: role)) {
-                    Text("自动分配").tag(String?.none)
-                    ForEach(voiceOptions, id: \.identifier) { v in
-                        Text(v.name).tag(String?.some(v.identifier))
+                HStack(spacing: 8) {
+                    Picker("声音", selection: voiceBinding(for: role)) {
+                        Text("自动分配").tag(String?.none)
+                        ForEach(voiceOptions, id: \.identifier) { v in
+                            Text(v.name).tag(String?.some(v.identifier))
+                        }
                     }
+                    .font(.caption)
+                    // 预听：按当前选择（含自动分配与性别音高补偿）实际说一句「你好，我是中国人」
+                    Button {
+                        previewVoice(for: role)
+                    } label: {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.caption)
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .font(.caption)
             }
         }
         .padding(.vertical, 2)
@@ -652,6 +663,15 @@ struct AnalysisView: View {
                 onVoiceChanged?(updated)
             }
         )
+    }
+
+    /// 预听该角色当前生效的声音（手动指定 → 自动分配，含性别音高补偿），说「你好，我是中国人」。
+    private func previewVoice(for role: CharacterRole) {
+        let identifier = voiceOverrides[role.canonicalName]
+            ?? TTSPlayer.assignVoicesAndPitches(roles: [role]).voices[role.id]?.identifier
+        let voice = identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+        let pitch = TTSPlayer.assignVoicesAndPitches(roles: [role]).pitches[role.id] ?? 1.0
+        VoicePreviewer.shared.preview(voice, pitch: pitch)
     }
 
     private func commitRename() {

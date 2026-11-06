@@ -13,6 +13,7 @@ struct PlayerBar: View {
     @Binding var startIndex: Int?   // 外部（ReadingView）传入的续读起点
     var voiceOverrides: [String: String] = [:]   // 每文档声音配置：角色称呼 → 声音 identifier
     var onOpenTOC: (() -> Void)? = nil           // 打开章节目录
+    var restartToken: Int = 0                    // 外部（目录 ▶︎）递增时：立即从新起点重新开始播放
 
     var body: some View {
         VStack(spacing: 8) {
@@ -51,6 +52,12 @@ struct PlayerBar: View {
         }
         .padding()
         .background(.thinMaterial)
+        .onChange(of: restartToken) { _ in
+            // 目录 ▶︎：正在播放则先停，再立即从新起点重新开始
+            guard restartToken > 0 else { return }
+            if player.isPlaying { player.stop() }
+            startPlayback()
+        }
     }
 
     // MARK: 声音装配
@@ -85,6 +92,11 @@ struct PlayerBar: View {
             player.pause()
             return
         }
+        startPlayback()
+    }
+
+    /// 组装声音并从起点开始播放（togglePlay 与「目录 ▶︎ 从本章朗读」共用）。
+    private func startPlayback() {
         player.rate = settings.defaultRate
         player.autoVoiceSwitch = settings.autoVoiceSwitch
 

@@ -101,12 +101,25 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func voicePicker(_ label: String, voices: [AVSpeechSynthesisVoice], selection: Binding<String?>) -> some View {
-        Picker(label, selection: selection) {
-            Text("系统默认").tag(String?.none)
-            ForEach(voices, id: \.identifier) { v in
-                Text("\(v.name)（\(v.language)）").tag(String?.some(v.identifier))
+    private func voicePicker(_ label: String, voices: [AVSpeechSynthesisVoice], selection: Binding<String?>, previewText: String = "你好，我是中国人") -> some View {
+        HStack(spacing: 8) {
+            Picker(label, selection: selection) {
+                Text("系统默认").tag(String?.none)
+                ForEach(voices, id: \.identifier) { v in
+                    Text("\(v.name)（\(v.language)）").tag(String?.some(v.identifier))
+                }
             }
+            // 预听：选定前先听听这个声音的效果
+            Button {
+                let voice = selection.wrappedValue.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+                VoicePreviewer.shared.preview(voice)
+                _ = previewText
+            } label: {
+                Image(systemName: "speaker.wave.2.fill")
+                    .foregroundColor(.accentColor)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("预听\(label)")
         }
     }
 }
