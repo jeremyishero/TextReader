@@ -10,9 +10,6 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.19
-  SherpaOnnx:
-    url: https://github.com/willwade/sherpa-onnx-spm.git
-    from: 1.13.3
 targets:
   TextReader:
     type: application
@@ -22,12 +19,16 @@ targets:
         excludes:
           - Packages
           - .github
+          - Vendor
           - README.md
           - Info.plist
     dependencies:
       - package: CoreLogic
       - package: ZIPFoundation
-      - package: SherpaOnnx
+      - framework: Vendor/sherpa-onnx.xcframework
+        embed: false
+      - framework: Vendor/onnxruntime.xcframework
+        embed: false
     infoPlist:
       path: Info.plist
     settings:
@@ -41,3 +42,5 @@ targets:
         ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: "YES"
         EMBEDDED_CONTENT_CONTAINS_SWIFT: "YES"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        # sherpa-onnx / onnxruntime 静态库需要 libc++；zlib 兜底
+        OTHER_LDFLAGS: "$(inherited) -lc++ -lz"
