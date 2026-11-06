@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreLogic
+import ZIPFoundation
 import sherpa_capi
 
 /// 可下载的离线语音包（模型来自 sherpa-onnx 社区，HuggingFace 托管，国内经 hf-mirror.com 镜像下载）。
@@ -31,6 +32,14 @@ final class OfflineTTSManager: ObservableObject {
         cfg.timeoutIntervalForResource = 86400
         return URLSession(configuration: cfg)
     }()
+    /// 下载线路：hf-mirror（国内直连）优先，失败自动换 huggingface 官方（有代理的用户可用）
+    private static let sources = ["https://hf-mirror.com", "https://huggingface.co"]
+    /// 部分 CDN 拒绝非浏览器 UA，统一带一个
+    private static func request(_ url: URL) -> URLRequest {
+        var req = URLRequest(url: url)
+        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) Safari/605.1.15", forHTTPHeaderField: "User-Agent")
+        return req
+    }
 
     static let packs: [VoicePackInfo] = [
         .init(id: "piper-xiaoya", repo: "csukuangfj/vits-piper-zh_CN-xiao_ya-medium-int8",
@@ -96,41 +105,108 @@ final class OfflineTTSManager: ObservableObject {
         onProgress: @escaping (Double) -> Void
     ) async -> String? {
         let fm = FileManager.default
-        // 1) 文件清单（经 hf-mirror API；HF 主站在国内不可达）
-        guard let apiURL = URL(string: "https://hf-mirror.com/api/models/" + pack.repo) else {
-            return "地址无效"
+
+        // 1) 文件清单：逐线路尝试
+        var siblings: [[String: Any]]? = nil
+        var lastErr = ""
+        for src in sources {
+            guard let apiURL = URL(string: src + "/api/models/" + pack.repo) else { continue }
+            do {
+                let (listData, resp) = try await session.data(for: request(apiURL))
+                guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+                    lastErr = src + " HTTP " + String((resp as? HTTPURLResponse)?.statusCode ?? -1)
+                    continue
+                }
+                guard let obj = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
+                      let s = obj["siblings"] as? [[String: Any]] else {
+                    lastErr = src + " 清单解析失败"
+                    continue
+                }
+                siblings = s
+                break
+            } catch {
+                lastErr = src + "：" + error.localizedDescription
+            }
         }
-        guard let (listData, resp) = try? await session.data(from: apiURL),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            return "无法连接下载源（hf-mirror），请检查网络后重试"
+        guard let list = siblings else {
+            return "所有下载线路均失败（已试 hf-mirror 与 huggingface）。最后错误：" + lastErr + "。可改用「从文件导入语音包」"
         }
-        guard let obj = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
-              let siblings = obj["siblings"] as? [[String: Any]] else {
-            return "获取文件清单失败"
-        }
-        let paths = siblings.compactMap { $0["rfilename"] as? String }.filter { keepFile($0) }
+        let paths = list.compactMap { $0["rfilename"] as? String }.filter { keepFile($0) }
         guard !paths.isEmpty else { return "源仓库没有可下载文件" }
 
-        // 2) 逐文件下载（保留相对路径；download(to:) 落盘不占大内存）
+        // 2) 逐文件下载（每个文件都逐线路尝试；download(to:) 落盘不占大内存）
         try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
         for (i, path) in paths.enumerated() {
-            guard let url = URL(string: "https://hf-mirror.com/" + pack.repo + "/resolve/main/" + path) else {
-                return "文件地址无效：" + path
-            }
-            do {
-                let (tmp, dlResp) = try await session.download(from: url)
-                guard let http = dlResp as? HTTPURLResponse, http.statusCode == 200 else {
-                    let code = (dlResp as? HTTPURLResponse)?.statusCode ?? -1
-                    return "下载 " + path + " 失败（HTTP " + String(code) + "）"
+            var done = false
+            var fileErr = ""
+            for src in sources {
+                guard let url = URL(string: src + "/" + pack.repo + "/resolve/main/" + path) else { continue }
+                do {
+                    let (tmp, dlResp) = try await session.download(for: request(url))
+                    guard let http = dlResp as? HTTPURLResponse, http.statusCode == 200 else {
+                        fileErr = src + " HTTP " + String((dlResp as? HTTPURLResponse)?.statusCode ?? -1)
+                        continue
+                    }
+                    let fileURL = destDir.appendingPathComponent(path)
+                    try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? fm.removeItem(at: fileURL)
+                    try fm.moveItem(at: tmp, to: fileURL)
+                    done = true
+                    break
+                } catch {
+                    fileErr = src + "：" + error.localizedDescription
                 }
-                let fileURL = destDir.appendingPathComponent(path)
-                try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try? fm.removeItem(at: fileURL)
-                try fm.moveItem(at: tmp, to: fileURL)
-            } catch {
-                return "下载 " + path + " 失败：" + error.localizedDescription
+            }
+            guard done else {
+                return "下载 " + path + " 失败（所有线路）。最后错误：" + fileErr + "。可改用「从文件导入语音包」"
             }
             onProgress(Double(i + 1) / Double(paths.count))
+        }
+        return nil
+    }
+
+    // MARK: 从文件导入语音包（.zip，内容为「语音包文件夹/」或直接文件集）
+
+    /// 解压 zip 到对应语音包目录并校验 tokens.txt；成功返回 nil，失败返回原因。
+    func importPackZip(from url: URL) -> String? {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let archive = try? Archive(url: url, accessMode: .read) else {
+            return "无法读取压缩包"
+        }
+        // 识别包内根文件夹名（如 piper-xiaoya/model.onnx）
+        var packId: String? = nil
+        for entry in archive {
+            let comps = entry.path.split(separator: "/")
+            if comps.count > 1, comps[0] != "__MACOSX" {
+                packId = String(comps[0])
+                break
+            }
+        }
+        guard let id = packId else {
+            return "压缩包内需包含以语音包名命名的文件夹（如 piper-xiaoya/）"
+        }
+        let dest = packDir(id)
+        let prefix = id + "/"
+        for entry in archive where entry.path.hasPrefix(prefix) {
+            let rel = String(entry.path.dropFirst(prefix.count))
+            if rel.isEmpty { continue }
+            let fileURL = dest.appendingPathComponent(rel)
+            if entry.type == .directory {
+                try? fm.createDirectory(at: fileURL, withIntermediateDirectories: true)
+                continue
+            }
+            try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? fm.removeItem(at: fileURL)
+            do {
+                _ = try archive.extract(entry, to: fileURL)
+            } catch {
+                return "解压 " + rel + " 失败：" + error.localizedDescription
+            }
+        }
+        guard fm.fileExists(atPath: dest.appendingPathComponent("tokens.txt").path) else {
+            try? fm.removeItem(at: dest)
+            return "压缩包内缺少 tokens.txt，不是有效的语音包"
         }
         return nil
     }

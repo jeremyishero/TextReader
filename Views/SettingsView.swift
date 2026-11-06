@@ -6,6 +6,8 @@ struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var offlineMgr = OfflineTTSManager.shared
+    @State private var showPackImporter = false
+    @State private var packImportMsg: String? = nil
 
     private var zhHansVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-CN") }
@@ -69,6 +71,12 @@ struct SettingsView: View {
                     ForEach(OfflineTTSManager.packs) { pack in
                         packRow(pack)
                     }
+                    Button {
+                        showPackImporter = true
+                    } label: {
+                        Label("从文件导入语音包(.zip)", systemImage: "square.and.arrow.down")
+                            .font(.caption)
+                    }
                 }
 
                 Section("云端 TTS 备选通道（可选）") {
@@ -107,6 +115,27 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
+            .fileImporter(
+                isPresented: $showPackImporter,
+                allowedContentTypes: [UTType(filenameExtension: "zip") ?? .zip, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first { importPackFromURL(url) }
+                case .failure(let error):
+                    guard (error as? CocoaError)?.code != .userCancelled else { return }
+                    packImportMsg = "打开文件选择器失败：" + error.localizedDescription
+                }
+            }
+            .alert("语音包导入", isPresented: Binding(
+                get: { packImportMsg != nil },
+                set: { if !$0 { packImportMsg = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(packImportMsg ?? "")
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") { dismiss() }
@@ -226,6 +255,15 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 从本地 zip 导入语音包（电脑代下后隔空投送/文件 App 传输）
+    private func importPackFromURL(_ url: URL) {
+        if let err = offlineMgr.importPackZip(from: url) {
+            packImportMsg = "导入失败：" + err
+        } else {
+            packImportMsg = "导入成功！点该语音包行的「使用」即可启用。"
+        }
     }
 
     /// 用离线语音包按性别编号合成一句试听并播放
