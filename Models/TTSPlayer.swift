@@ -78,6 +78,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     private var roleVoices: [String: AVSpeechSynthesisVoice] = [:]
     /// 每角色音高补偿（性别音高补偿/手动微调），默认 1.0
     private var rolePitches: [String: Float] = [:]
+    /// 每角色性别（离线语音包按性别路由音色用）
+    private var roleGenders: [String: Gender] = [:]
     private var defaultVoice: AVSpeechSynthesisVoice?
     private var languageVoices: [ScriptLanguage: AVSpeechSynthesisVoice] = [:]
     var autoVoiceSwitch = true
@@ -86,7 +88,7 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     /// 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech。
     /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
-    var offlineProvider: ((String) async -> Data?)?
+    var offlineProvider: ((String, Gender) async -> Data?)?
     var cloudProvider: ((String) async -> Data?)?
     private var audioPlayer: AVAudioPlayer?
     /// 当前段原始文本（未经规则替换），供异步合成完成后的归属校验
@@ -126,6 +128,7 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     func setRoleVoices(_ map: [String: AVSpeechSynthesisVoice]) { roleVoices = map }
     func setRolePitches(_ map: [String: Float]) { rolePitches = map }
+    func setRoleGenders(_ map: [String: Gender]) { roleGenders = map }
     func setDefaultVoice(_ v: AVSpeechSynthesisVoice?) { defaultVoice = v }
     func setLanguageVoices(_ map: [ScriptLanguage: AVSpeechSynthesisVoice]) { languageVoices = map }
 
@@ -267,7 +270,8 @@ final class TTSPlayer: NSObject, ObservableObject {
 
         Task { @MainActor in
             // 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech
-            if let offlineProvider, let data = await offlineProvider(text), isPlaying, speakingRawText == raw {
+            let segGender = roleGenders[segments.indices.contains(currentIndex) ? (segments[currentIndex].characterId ?? "") : ""] ?? .neutral
+            if let offlineProvider, let data = await offlineProvider(text, segGender), isPlaying, speakingRawText == raw {
                 playAudioData(data, fallbackText: text, notice: "离线语音包合成失败，已回退")
                 return
             }

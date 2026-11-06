@@ -21,6 +21,15 @@ final class OfflineTTSManager: ObservableObject {
 
     @Published var downloading: Set<String> = []
     @Published var progress: [String: Double] = [:]     // packId → 0~1
+    @Published var errors: [String: String] = [:]       // packId → 最近一次下载失败原因
+
+    /// 大文件下载专用会话：请求/资源超时放宽，避免 115MB 模型被默认 60s 超时掐断
+    private static let session: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 3600
+        cfg.timeoutIntervalForResource = 86400
+        return URLSession(configuration: cfg)
+    }()
 
     static let packs: [VoicePackInfo] = [
         .init(id: "piper-xiaoya", repo: "csukuangfj/vits-piper-zh_CN-xiao_ya-medium-int8",
@@ -54,14 +63,16 @@ final class OfflineTTSManager: ObservableObject {
         guard !downloading.contains(pack.id) else { return }
         downloading.insert(pack.id)
         progress[pack.id] = 0
+        errors[pack.id] = nil
         Task {
-            let ok = await Self.downloadPackFiles(pack: pack, destDir: packDir(pack.id)) { [weak self] p in
+            let result = await Self.downloadPackFiles(pack: pack, destDir: packDir(pack.id)) { [weak self] p in
                 Task { @MainActor in self?.progress[pack.id] = p }
             }
             await MainActor.run {
                 self.downloading.remove(pack.id)
-                if !ok {
+                if case .failure(let msg) = result {
                     self.progress[pack.id] = nil
+                    self.errors[pack.id] = msg
                     // 清掉半成品，避免误判已安装
                     try? self.fm.removeItem(at: self.packDir(pack.id))
                 }
@@ -82,30 +93,45 @@ final class OfflineTTSManager: ObservableObject {
     private static func downloadPackFiles(
         pack: VoicePackInfo, destDir: URL,
         onProgress: @escaping (Double) -> Void
-    ) async -> Bool {
+    ) async -> Result<Void, String> {
         let fm = FileManager.default
         // 1) 文件清单（经 hf-mirror API；HF 主站在国内不可达）
-        guard let apiURL = URL(string: "https://hf-mirror.com/api/models/\(pack.repo)"),
-              let (listData, _) = try? await URLSession.shared.data(from: apiURL),
-              let obj = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
-              let siblings = obj["siblings"] as? [[String: Any]] else { return false }
-        let paths = siblings.compactMap { $0["rfilename"] as? String }.filter { Self.keepFile($0) }
-        guard !paths.isEmpty else { return false }
+        guard let apiURL = URL(string: "https://hf-mirror.com/api/models/" + pack.repo) else {
+            return .failure("地址无效")
+        }
+        guard let (listData, resp) = try? await session.data(from: apiURL),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            return .failure("无法连接下载源（hf-mirror），请检查网络后重试")
+        }
+        guard let obj = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
+              let siblings = obj["siblings"] as? [[String: Any]] else {
+            return .failure("获取文件清单失败")
+        }
+        let paths = siblings.compactMap { $0["rfilename"] as? String }.filter { keepFile($0) }
+        guard !paths.isEmpty else { return .failure("源仓库没有可下载文件") }
 
-        // 2) 逐文件下载（保留相对路径）
+        // 2) 逐文件下载（保留相对路径；download(to:) 落盘不占大内存）
         try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
         for (i, path) in paths.enumerated() {
-            guard let url = URL(string: "https://hf-mirror.com/\(pack.repo)/resolve/main/\(path)") else { return false }
-            guard let (data, resp) = try? await URLSession.shared.data(from: url),
-                  let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return false }
-            let fileURL = destDir.appendingPathComponent(path)
-            try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard let url = URL(string: "https://hf-mirror.com/" + pack.repo + "/resolve/main/" + path) else {
+                return .failure("文件地址无效：" + path)
+            }
             do {
-                try data.write(to: fileURL, options: .atomic)
-            } catch { return false }
+                let (tmp, dlResp) = try await session.download(from: url)
+                guard let http = dlResp as? HTTPURLResponse, http.statusCode == 200 else {
+                    let code = (dlResp as? HTTPURLResponse)?.statusCode ?? -1
+                    return .failure("下载 " + path + " 失败（HTTP " + String(code) + "）")
+                }
+                let fileURL = destDir.appendingPathComponent(path)
+                try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.removeItem(at: fileURL)
+                try fm.moveItem(at: tmp, to: fileURL)
+            } catch {
+                return .failure("下载 " + path + " 失败：" + error.localizedDescription)
+            }
             onProgress(Double(i + 1) / Double(paths.count))
         }
-        return true
+        return .success(())
     }
 
     /// 该下载仓库里的哪些文件（跳过文档/脚本/测试音频/压缩包本身）。
@@ -120,20 +146,28 @@ final class OfflineTTSManager: ObservableObject {
     // MARK: 合成
 
     /// 合成一段文本 → WAV Data。引擎按包缓存、串行加载；失败返回 nil（播放器自动回退云端/本地）。
-    func synthesize(text: String, packId: String, sid: Int32, speed: Float) async -> Data? {
+    /// 多音色包：按角色性别自动选 sid（maleSID/femaleSID）；单音色包忽略 sid（固定 0）。
+    func synthesize(text: String, packId: String, gender: Gender,
+                    maleSID: Int32, femaleSID: Int32, speed: Float) async -> Data? {
         guard !text.isEmpty, isInstalled(packId) else { return nil }
         let dir = packDir(packId).path
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
                 guard let self else { cont.resume(returning: nil); return }
-                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
+                guard let tts = self.loadEngine(packId: packId, dir: dir) else {
+                    cont.resume(returning: nil); return
+                }
+                let sid: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1
+                    ? (gender == .male ? maleSID : femaleSID)
+                    : 0
+                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: sid, speed: speed)
                 cont.resume(returning: data)
             }
         }
     }
 
-    private func engineSynthesize(text: String, packId: String, dir: String, sid: Int32, speed: Float) -> Data? {
-        guard let tts = loadEngine(packId: packId, dir: dir) else { return nil }
+    private func engineSynthesize(text: String, packId: String, dir: String,
+                                  tts: OpaquePointer, sid: Int32, speed: Float) -> Data? {
         let audio = SherpaOnnxOfflineTtsGenerate(tts, text, sid, speed)
         guard let audio, audio.pointee.n > 0 else {
             if let audio { SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio) }

@@ -123,6 +123,9 @@ struct PlayerBar: View {
                     pitches[role.id] = assign.pitches[role.id] ?? 1.0
                 }
             }
+            var genders: [String: Gender] = [:]
+            for role in a.roles { genders[role.id] = role.gender }
+            player.setRoleGenders(genders)
             player.setRoleVoices(map)
             player.setRolePitches(pitches)
             player.playSegments(a.segments, startIndex: start, cloud: cloud)

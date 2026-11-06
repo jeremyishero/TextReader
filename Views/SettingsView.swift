@@ -61,8 +61,9 @@ struct SettingsView: View {
                     Toggle("启用离线语音包朗读", isOn: $settings.offlineTTSEnabled)
                     Text("下载到手机本地，完全离线合成，优先级高于云端 TTS。模型来自 sherpa-onnx 社区开放模型（国内经 hf-mirror 镜像下载）。")
                         .font(.caption).foregroundColor(.secondary)
-                    Stepper("说话人编号：\(settings.offlineTTSSpeaker)", value: $settings.offlineTTSSpeaker, in: 0...183)
-                    Text("仅多音色包（AISHELL3）有效；单音色包忽略此值。可逐个试听找到喜欢的声音。")
+                    Stepper("男声编号：\(settings.offlineTTSMaleSID)", value: $settings.offlineTTSMaleSID, in: 0...183)
+                    Stepper("女声编号：\(settings.offlineTTSFemaleSID)", value: $settings.offlineTTSFemaleSID, in: 0...183)
+                    Text("朗读时自动按角色性别分配音色：男角色用男声编号、女角色用女声编号（仅多音色包 AISHELL3 有效，单音色包忽略）。用各行试听按钮找到满意的编号后填到这里。")
                         .font(.caption2).foregroundColor(.secondary)
                     ForEach(OfflineTTSManager.packs) { pack in
                         packRow(pack)
@@ -165,19 +166,34 @@ struct SettingsView: View {
                 }
             }
             Spacer()
+            if let err = offlineMgr.errors[pack.id] {
+                Text(err)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .frame(maxWidth: 130, alignment: .trailing)
+            }
             if offlineMgr.downloading.contains(pack.id) {
                 Text("\(Int((offlineMgr.progress[pack.id] ?? 0) * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundColor(.secondary)
             } else if installed {
-                // 预听
+                // 预听：女声编号 / 男声编号（多音色包有效；单音色包两键同声）
                 Button {
-                    previewOfflinePack(pack)
+                    previewOfflinePack(pack, gender: .female)
                 } label: {
                     Image(systemName: "speaker.wave.2.fill")
                         .foregroundColor(.accentColor)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("女声试听")
+                Button {
+                    previewOfflinePack(pack, gender: .male)
+                } label: {
+                    Image(systemName: "person.wave.2.fill")
+                        .foregroundColor(.accentColor)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("男声试听")
                 // 启用 / 停用
                 Button(isCurrent ? "停用" : "使用") {
                     settings.offlineTTSPackId = isCurrent ? "" : pack.id
@@ -200,6 +216,8 @@ struct SettingsView: View {
                 .buttonStyle(.borderless)
             } else {
                 Button("下载") {
+                    settings.offlineTTSPackId = pack.id   // 预选：装完即用
+                    settings.offlineTTSEnabled = true
                     offlineMgr.download(pack)
                 }
                 .font(.caption)
@@ -209,13 +227,15 @@ struct SettingsView: View {
         .padding(.vertical, 2)
     }
 
-    /// 用离线语音包合成一句试听并播放
-    private func previewOfflinePack(_ pack: VoicePackInfo) {
+    /// 用离线语音包按性别编号合成一句试听并播放
+    private func previewOfflinePack(_ pack: VoicePackInfo, gender: Gender) {
         Task {
             if let wav = await offlineMgr.synthesize(
                 text: "你好，我是中国人",
                 packId: pack.id,
-                sid: Int32(settings.offlineTTSSpeaker),
+                gender: gender,
+                maleSID: Int32(settings.offlineTTSMaleSID),
+                femaleSID: Int32(settings.offlineTTSFemaleSID),
                 speed: 1.0
             ) {
                 VoicePreviewer.shared.playAudio(wav)
