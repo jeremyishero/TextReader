@@ -17,37 +17,37 @@ jobs:
 
       - name: Download sherpa-onnx XCFrameworks (offline TTS)
         run: |
+          DL=$RUNNER_TEMP
           mkdir -p Vendor
-          curl -L --fail -o sherpa.xcframework.zip \
-            https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/sherpa-onnx.xcframework.zip
-          curl -L --fail -o ort.xcframework.zip \
-            https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/onnxruntime.xcframework.zip
-          unzip -q -o sherpa.xcframework.zip -d Vendor
-          unzip -q -o ort.xcframework.zip -d Vendor
-          echo "--- before normalize:"
-          find Vendor -maxdepth 2 -type d || true
-          # 归一化：无论 zip 内层级如何，把 *.xcframework 提到 Vendor 根
-          find Vendor -type d -name "*.xcframework" | while read -r xcf; do
-            base=$(basename "$xcf")
-            if [ "$xcf" != "Vendor/$base" ]; then
-              rm -rf "Vendor/$base"
-              mv "$xcf" "Vendor/$base"
-            fi
-          done
-          echo "--- after normalize:"
-          ls Vendor
-          echo "--- module maps:"
-          find Vendor -name "module.modulemap" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
-          echo "--- headers layout:"
-          find Vendor/sherpa-onnx.xcframework/ios-arm64 -maxdepth 3 | head -30 || true
-          # onnxruntime 仅作链接库：去掉其 Headers/Modules，避免两个 module.modulemap 冲突
-          for plat in Vendor/onnxruntime.xcframework/*/; do
+          # 官方配对组合：sherpa-onnx v1.13.8 static + onnxruntime-libs v1.28.2 static
+          curl -sL --fail -o $DL/sherpa_ios.zip \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/xcframework/sherpa-onnx-v1.13.8-ios-static.xcframework.zip
+          curl -sL --fail -o $DL/sherpa_macos.zip \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/xcframework/sherpa-onnx-v1.13.8-macos-static.xcframework.zip
+          curl -sL --fail -o $DL/ort_ios.zip \
+            https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.28.2/onnxruntime-ios-static-xcframework-1.28.2.xcframework.zip
+          curl -sL --fail -o $DL/ort_macos.zip \
+            https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.28.2/onnxruntime-macos-static-xcframework-1.28.2.xcframework.zip
+          rm -rf Vendor/x1 Vendor/x2 Vendor/x3 Vendor/x4
+          unzip -q -o $DL/sherpa_ios.zip -d Vendor/x1
+          unzip -q -o $DL/sherpa_macos.zip -d Vendor/x2
+          unzip -q -o $DL/ort_ios.zip -d Vendor/x3
+          unzip -q -o $DL/ort_macos.zip -d Vendor/x4
+          mv "$(find Vendor/x1 -maxdepth 3 -type d -name '*.xcframework' | head -1)" Vendor/SherpaOnnxIOS.xcframework
+          mv "$(find Vendor/x2 -maxdepth 3 -type d -name '*.xcframework' | head -1)" Vendor/SherpaOnnxMacOS.xcframework
+          mv "$(find Vendor/x3 -maxdepth 3 -type d -name '*.xcframework' | head -1)" Vendor/OnnxruntimeIOS.xcframework
+          mv "$(find Vendor/x4 -maxdepth 3 -type d -name '*.xcframework' | head -1)" Vendor/OnnxruntimeMacOS.xcframework
+          # onnxruntime 仅作链接库：剥 Headers/Modules，避免 module.modulemap 冲突
+          for plat in Vendor/OnnxruntimeIOS.xcframework/*/ Vendor/OnnxruntimeMacOS.xcframework/*/; do
             rm -rf "$plat/Headers" "$plat/Modules"
           done
           for i in 0 1 2 3; do
-            plutil -remove "AvailableLibraries.$i.HeadersPath" Vendor/onnxruntime.xcframework/Info.plist 2>/dev/null || true
-            plutil -remove "AvailableLibraries.$i.ModulesPath" Vendor/onnxruntime.xcframework/Info.plist 2>/dev/null || true
+            plutil -remove "AvailableLibraries.$i.HeadersPath" Vendor/OnnxruntimeIOS.xcframework/Info.plist 2>/dev/null || true
+            plutil -remove "AvailableLibraries.$i.ModulesPath" Vendor/OnnxruntimeIOS.xcframework/Info.plist 2>/dev/null || true
           done
+          echo "--- Vendor:"
+          ls Vendor
+          ls Vendor/SherpaOnnxIOS.xcframework
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -65,10 +65,10 @@ jobs:
 
       - name: Diagnose offline TTS on macOS
         run: |
-          curl -L --fail -o d.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-zh-hf-theresa.tar.bz2
+          curl -sL --fail -o d.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-zh-hf-theresa.tar.bz2
           tar xjf d.tar.bz2
-          SHERPA_LIB=$(find Vendor/sherpa-onnx.xcframework/macos-arm64_x86_64 -type f \( -name "*.a" -o -name "sherpa-onnx" \) ! -name "*.h" | head -1)
-          ORT_LIB=$(find Vendor/onnxruntime.xcframework/macos-arm64_x86_64 -type f \( -name "*.a" -o -name "onnxruntime" \) ! -name "*.h" ! -path "*Headers*" | head -1)
+          SHERPA_LIB=$(find Vendor/SherpaOnnxMacOS.xcframework -type f \( -name "*.a" -o -name "sherpa-onnx" \) ! -name "*.h" | head -1)
+          ORT_LIB=$(find Vendor/OnnxruntimeMacOS.xcframework -type f \( -name "*.a" -o -name "onnxruntime" \) ! -path "*Headers*" | head -1)
           echo "SHERPA_LIB=$SHERPA_LIB | ORT_LIB=$ORT_LIB"
           mkdir -p diag_inc
           cp Packages/SherpaCAPI/include/sherpa_capi.h diag_inc/
