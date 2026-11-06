@@ -43,14 +43,14 @@ final class OfflineTTSManager: ObservableObject {
 
     /// 仓库均已核实存在于 hf-mirror（不存在会导致 App 内下载必 404）
     static let packs: [VoicePackInfo] = [
-        .init(id: "aishell3", repo: "csukuangfj/vits-zh-aishell3",
-              displayName: "AISHELL3 · 多音色（男女都有，推荐）", gender: "多音色", sizeMB: 140),
         .init(id: "theresa", repo: "csukuangfj/vits-zh-hf-theresa",
               displayName: "Theresa · 标准女声", gender: "女声", sizeMB: 115),
         .init(id: "keqing", repo: "csukuangfj/vits-zh-hf-keqing",
               displayName: "刻晴 · 标准女声", gender: "女声", sizeMB: 115),
         .init(id: "fanchen-c", repo: "csukuangfj/vits-zh-hf-fanchen-C",
               displayName: "Fanchen-C · 音色需试听", gender: "试听确认", sizeMB: 115),
+        .init(id: "melo", repo: "csukuangfj/vits-melo-tts-zh_en",
+              displayName: "Melo · 中英混读女声", gender: "女声", sizeMB: 163),
     ]
 
     private let fm = FileManager.default
