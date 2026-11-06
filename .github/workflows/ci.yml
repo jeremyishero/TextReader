@@ -24,6 +24,17 @@ jobs:
             https://github.com/willwade/sherpa-onnx-spm/releases/download/1.13.8/onnxruntime.xcframework.zip
           unzip -q -o sherpa.xcframework.zip -d Vendor
           unzip -q -o ort.xcframework.zip -d Vendor
+          echo "--- before normalize:"
+          find Vendor -maxdepth 2 -type d || true
+          # 归一化：无论 zip 内层级如何，把 *.xcframework 提到 Vendor 根
+          find Vendor -type d -name "*.xcframework" | while read -r xcf; do
+            base=$(basename "$xcf")
+            if [ "$xcf" != "Vendor/$base" ]; then
+              rm -rf "Vendor/$base"
+              mv "$xcf" "Vendor/$base"
+            fi
+          done
+          echo "--- after normalize:"
           ls Vendor
 
       - name: Install xcodegen
