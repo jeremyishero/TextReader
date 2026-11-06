@@ -31,9 +31,9 @@ targets:
       - package: CoreLogic
       - package: ZIPFoundation
       - package: SherpaCAPI
-      - framework: Vendor/sherpa-onnx.xcframework
+      - framework: Vendor/SherpaOnnxIOS.xcframework
         embed: false
-      - framework: Vendor/onnxruntime.xcframework
+      - framework: Vendor/OnnxruntimeIOS.xcframework
         embed: false
     infoPlist:
       path: Info.plist
