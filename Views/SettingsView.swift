@@ -4,6 +4,7 @@ import AVFoundation
 struct SettingsView: View {
     @EnvironmentObject var settings: AppSettings
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var offlineMgr = OfflineTTSManager.shared
 
     private var zhHansVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-CN") }
@@ -54,6 +55,18 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                     Text("填入明确不是人名的词，用逗号、顿号、空格或换行分隔（如：很快，胡扯，安静）。解析时这些词将永远不被识别为角色。修改后需重新「整体解析」生效。")
                         .font(.caption).foregroundColor(.secondary)
+                }
+
+                Section("离线语音包（下载后免网络 · 推荐国内用户）") {
+                    Toggle("启用离线语音包朗读", isOn: $settings.offlineTTSEnabled)
+                    Text("下载到手机本地，完全离线合成，优先级高于云端 TTS。模型来自 sherpa-onnx 社区开放模型（国内经 hf-mirror 镜像下载）。")
+                        .font(.caption).foregroundColor(.secondary)
+                    Stepper("说话人编号：\(settings.offlineTTSSpeaker)", value: $settings.offlineTTSSpeaker, in: 0...183)
+                    Text("仅多音色包（AISHELL3）有效；单音色包忽略此值。可逐个试听找到喜欢的声音。")
+                        .font(.caption2).foregroundColor(.secondary)
+                    ForEach(OfflineTTSManager.packs) { pack in
+                        packRow(pack)
+                    }
                 }
 
                 Section("云端 TTS 备选通道（可选）") {
@@ -120,6 +133,93 @@ struct SettingsView: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("预听\(label)")
+        }
+    }
+
+    // MARK: 离线语音包行
+
+    @ViewBuilder
+    private func packRow(_ pack: VoicePackInfo) -> some View {
+        let installed = offlineMgr.isInstalled(pack.id)
+        let isCurrent = settings.offlineTTSEnabled && settings.offlineTTSPackId == pack.id
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(pack.displayName)
+                    if isCurrent {
+                        Text("使用中")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15))
+                            .foregroundColor(.accentColor)
+                            .cornerRadius(4)
+                    }
+                }
+                Text("\(pack.gender) · 约 \(pack.sizeMB)MB")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                if offlineMgr.downloading.contains(pack.id) {
+                    ProgressView(value: offlineMgr.progress[pack.id] ?? 0)
+                        .progressViewStyle(.linear)
+                }
+            }
+            Spacer()
+            if offlineMgr.downloading.contains(pack.id) {
+                Text("\(Int((offlineMgr.progress[pack.id] ?? 0) * 100))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.secondary)
+            } else if installed {
+                // 预听
+                Button {
+                    previewOfflinePack(pack)
+                } label: {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .foregroundColor(.accentColor)
+                }
+                .buttonStyle(.borderless)
+                // 启用 / 停用
+                Button(isCurrent ? "停用" : "使用") {
+                    settings.offlineTTSPackId = isCurrent ? "" : pack.id
+                    settings.offlineTTSEnabled = !isCurrent
+                }
+                .font(.caption)
+                .buttonStyle(.bordered)
+                // 删除
+                Button {
+                    offlineMgr.deletePack(pack.id)
+                    if settings.offlineTTSPackId == pack.id {
+                        settings.offlineTTSPackId = ""
+                        settings.offlineTTSEnabled = false
+                    }
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.borderless)
+            } else {
+                Button("下载") {
+                    offlineMgr.download(pack)
+                }
+                .font(.caption)
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// 用离线语音包合成一句试听并播放
+    private func previewOfflinePack(_ pack: VoicePackInfo) {
+        Task {
+            if let wav = await offlineMgr.synthesize(
+                text: "你好，我是中国人",
+                packId: pack.id,
+                sid: Int32(settings.offlineTTSSpeaker),
+                speed: 1.0
+            ) {
+                VoicePreviewer.shared.playAudio(wav)
+            }
         }
     }
 }

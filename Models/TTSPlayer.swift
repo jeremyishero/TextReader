@@ -8,10 +8,12 @@ import CoreLogic
 final class VoicePreviewer: ObservableObject {
     static let shared = VoicePreviewer()
     private let synth = AVSpeechSynthesizer()
+    private var audioPlayer: AVAudioPlayer?
 
     /// 用指定声音说一句「你好，我是中国人」。voice 传 nil 时用简体中文默认声。
     func preview(_ voice: AVSpeechSynthesisVoice?, rate: Float = 1.0, pitch: Float = 1.0) {
         synth.stopSpeaking(at: .immediate)
+        audioPlayer?.stop()
         let utterance = AVSpeechUtterance(string: "你好，我是中国人")
         if let voice {
             utterance.voice = voice
@@ -24,8 +26,16 @@ final class VoicePreviewer: ObservableObject {
         synth.speak(utterance)
     }
 
+    /// 播放已合成的音频数据（离线语音包试听用）。
+    func playAudio(_ data: Data) {
+        synth.stopSpeaking(at: .immediate)
+        audioPlayer = try? AVAudioPlayer(data: data)
+        audioPlayer?.play()
+    }
+
     func stop() {
         synth.stopSpeaking(at: .immediate)
+        audioPlayer?.stop()
     }
 }
 
@@ -74,10 +84,13 @@ final class TTSPlayer: NSObject, ObservableObject {
     private var currentIndex = 0
     private var mode: PlayMode = .plain
 
-    /// 云端合成闭包（由 App 层注入）；返回 nil 表示失败，将回退本地。
+    /// 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech。
+    /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
+    var offlineProvider: ((String) async -> Data?)?
     var cloudProvider: ((String) async -> Data?)?
-    private var useCloud = false
     private var audioPlayer: AVAudioPlayer?
+    /// 当前段原始文本（未经规则替换），供异步合成完成后的归属校验
+    private var speakingRawText: String?
 
     /// 自定义朗读规则（由 ReadingView 按文档注入；本地/云端朗读前统一应用）
     var customRules: [CustomRule] = []
@@ -195,7 +208,6 @@ final class TTSPlayer: NSObject, ObservableObject {
     func playSegments(_ segments: [SpeechSegment], startIndex: Int = 0, cloud: Bool = false) {
         self.segments = segments
         self.mode = .segments
-        self.useCloud = cloud
         currentIndex = max(0, min(startIndex, segments.count - 1))
         isPlaying = true
         speakCurrent()
@@ -204,29 +216,32 @@ final class TTSPlayer: NSObject, ObservableObject {
     func playPlain(_ chunks: [String], startIndex: Int = 0, cloud: Bool = false) {
         self.plainChunks = chunks
         self.mode = .plain
-        self.useCloud = cloud
         currentIndex = max(0, min(startIndex, chunks.count - 1))
         isPlaying = true
         speakCurrent()
     }
 
     func pause() {
-        if useCloud { audioPlayer?.pause() } else { synth.pauseSpeaking(at: .word) }
+        audioPlayer?.pause()
+        synth.pauseSpeaking(at: .word)
         isPlaying = false
     }
 
     func resume() {
-        if useCloud { audioPlayer?.play() } else { synth.continueSpeaking() }
+        audioPlayer?.play()
+        synth.continueSpeaking()
         isPlaying = true
     }
 
     func stop() {
-        if useCloud { audioPlayer?.stop() } else { synth.stopSpeaking(at: .immediate) }
+        audioPlayer?.stop()
+        synth.stopSpeaking(at: .immediate)
         audioPlayer = nil
         isPlaying = false
         currentIndex = 0
         currentSegmentIndex = -1
         nowSpeakingText = nil
+        speakingRawText = nil
     }
 
     private func finish() {
@@ -246,13 +261,35 @@ final class TTSPlayer: NSObject, ObservableObject {
         guard let raw = currentText() else { finish(); return }
         let text = applyCustomRules(raw)
         currentSegmentIndex = currentIndex
+        speakingRawText = raw
         nowSpeakingText = text
         onIndexChange?(currentIndex, mode == .segments)
 
-        if useCloud {
-            speakCloud(text)
-        } else {
+        Task { @MainActor in
+            // 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech
+            if let offlineProvider, let data = await offlineProvider(text), isPlaying, speakingRawText == raw {
+                playAudioData(data, fallbackText: text, notice: "离线语音包合成失败，已回退")
+                return
+            }
+            if let cloudProvider, let data = await cloudProvider(text), isPlaying, speakingRawText == raw {
+                playAudioData(data, fallbackText: text, notice: nil)
+                return
+            }
+            guard isPlaying, speakingRawText == raw else { return }
             speakLocal(text)
+        }
+    }
+
+    /// 用内存中的音频数据（WAV/MP3 等）播放本段。
+    private func playAudioData(_ data: Data, fallbackText: String, notice: String?) {
+        do {
+            let p = try AVAudioPlayer(data: data)
+            p.delegate = self
+            audioPlayer = p
+            p.play()
+        } catch {
+            if let notice { onCloudFallback?() }
+            speakLocal(fallbackText)
         }
     }
 
@@ -290,29 +327,6 @@ final class TTSPlayer: NSObject, ObservableObject {
         synth.speak(utterance)
     }
 
-    /// 云端合成（AVAudioPlayer 播放）；失败自动回退本地并通知 UI。
-    private func speakCloud(_ text: String) {
-        Task {
-            let data = await cloudProvider?(text)
-            guard let data, data.count > 0, isPlaying, currentText() == text else {
-                // 云端失败 → 本次段回退本地合成（并提示用户）
-                if isPlaying {
-                    onCloudFallback?()
-                    speakLocal(text)
-                }
-                return
-            }
-            do {
-                let p = try AVAudioPlayer(data: data)
-                p.delegate = self
-                audioPlayer = p
-                p.play()
-            } catch {
-                onCloudFallback?()
-                speakLocal(text)
-            }
-        }
-    }
 
     private func advance() {
         // 停止后仍可能收到上一次朗读的完成回调，此时不得推进下一段（否则表现为「停了又继续读」）

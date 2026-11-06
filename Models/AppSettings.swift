@@ -36,6 +36,13 @@ final class AppSettings: ObservableObject {
     @Published var cloudTTSModel: String = "tts-1" { didSet { save("cloudTTSModel", cloudTTSModel) } }
     @Published var cloudTTSVoice: String = "alloy" { didSet { save("cloudTTSVoice", cloudTTSVoice) } }
 
+    // MARK: 离线语音包（本地合成 · sherpa-onnx）
+    @Published var offlineTTSEnabled: Bool = false { didSet { save("offlineTTSEnabled", offlineTTSEnabled) } }
+    /// 当前使用的离线语音包 id（对应 OfflineTTSManager.packs）
+    @Published var offlineTTSPackId: String = "" { didSet { save("offlineTTSPackId", offlineTTSPackId) } }
+    /// 多音色包（如 AISHELL3）的说话人编号
+    @Published var offlineTTSSpeaker: Int = 0 { didSet { save("offlineTTSSpeaker", offlineTTSSpeaker) } }
+
     init() { load() }
 
     // MARK: 持久化
@@ -66,6 +73,9 @@ final class AppSettings: ObservableObject {
         cloudTTSApiKey = d.string(forKey: "cloudTTSApiKey") ?? ""
         if let m = d.string(forKey: "cloudTTSModel"), !m.isEmpty { cloudTTSModel = m }
         if let v = d.string(forKey: "cloudTTSVoice"), !v.isEmpty { cloudTTSVoice = v }
+        if d.object(forKey: "offlineTTSEnabled") != nil { offlineTTSEnabled = d.bool(forKey: "offlineTTSEnabled") }
+        if let p = d.string(forKey: "offlineTTSPackId") { offlineTTSPackId = p }
+        if d.object(forKey: "offlineTTSSpeaker") != nil { offlineTTSSpeaker = d.integer(forKey: "offlineTTSSpeaker") }
     }
 
     /// nil 值不能直接 set：首次启动 load() 会把 String? 属性置为 nil，didSet 触发本方法时

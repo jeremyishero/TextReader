@@ -10,6 +10,9 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     from: 0.9.19
+  SherpaOnnx:
+    url: https://github.com/willwade/sherpa-onnx-spm.git
+    from: 1.13.3
 targets:
   TextReader:
     type: application
@@ -24,6 +27,7 @@ targets:
     dependencies:
       - package: CoreLogic
       - package: ZIPFoundation
+      - package: SherpaOnnx
     infoPlist:
       path: Info.plist
     settings:

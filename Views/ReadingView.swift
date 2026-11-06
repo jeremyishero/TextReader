@@ -417,6 +417,14 @@ struct ReadingView: View {
             guard client.isConfigured else { return nil }
             return try? await client.synthesize(text)
         }
+        // 离线语音包注入（优先于云端）：已下载且启用的包在手机本地合成
+        player.offlineProvider = { text in
+            guard settings.offlineTTSEnabled, !settings.offlineTTSPackId.isEmpty else { return nil }
+            let packId = settings.offlineTTSPackId
+            let sid = Int32(settings.offlineTTSSpeaker)
+            let speed = player.rate
+            return await OfflineTTSManager.shared.synthesize(text: text, packId: packId, sid: sid, speed: speed)
+        }
         player.autoVoiceSwitch = settings.autoVoiceSwitch
         // 云端合成失败自动回退本地时，给用户一个明确提示（不再静默）
         player.onCloudFallback = {
