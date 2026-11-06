@@ -36,6 +36,10 @@ jobs:
           done
           echo "--- after normalize:"
           ls Vendor
+          echo "--- module maps:"
+          find Vendor -name "module.modulemap" -exec sh -c 'echo "== $1"; cat "$1"' _ {} \; || true
+          echo "--- headers layout:"
+          find Vendor/sherpa-onnx.xcframework/ios-arm64 -maxdepth 3 | head -30 || true
           # onnxruntime 仅作链接库：去掉其 Headers/Modules，避免两个 module.modulemap 冲突
           for plat in Vendor/onnxruntime.xcframework/*/; do
             rm -rf "$plat/Headers" "$plat/Modules"
