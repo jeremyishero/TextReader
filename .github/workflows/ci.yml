@@ -70,7 +70,14 @@ jobs:
           SHERPA_LIB=$(find Vendor/sherpa-onnx.xcframework/macos-arm64_x86_64 -type f \( -name "*.a" -o -name "sherpa-onnx" \) ! -name "*.h" | head -1)
           ORT_LIB=$(find Vendor/onnxruntime.xcframework/macos-arm64_x86_64 -type f \( -name "*.a" -o -name "onnxruntime" \) ! -name "*.h" ! -path "*Headers*" | head -1)
           echo "SHERPA_LIB=$SHERPA_LIB | ORT_LIB=$ORT_LIB"
-          xcrun swiftc diag/main.swift "$SHERPA_LIB" "$ORT_LIB" -I Packages/SherpaCAPI/include -lc++ -o diag_bin
+          mkdir -p diag_inc
+          cp Packages/SherpaCAPI/include/sherpa_capi.h diag_inc/
+          printf 'module sherpa_capi {
+  umbrella header "sherpa_capi.h"
+  export *
+}
+' > diag_inc/module.modulemap
+          xcrun swiftc diag/main.swift "$SHERPA_LIB" "$ORT_LIB" -I diag_inc -lc++ -o diag_bin
           ./diag_bin vits-zh-hf-theresa
 
       - name: CoreLogic unit tests
