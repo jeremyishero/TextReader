@@ -166,16 +166,16 @@ final class OfflineTTSManager: ObservableObject {
               let tokensRel = firstFile(matching: { $0 == "tokens.txt" }) else { return nil }
 
         var vits = SherpaOnnxOfflineTtsVitsModelConfig()
-        vits.model = strdup(dir + "/" + modelRel)
-        vits.tokens = strdup(dir + "/" + tokensRel)
+        vits.model = UnsafePointer(strdup(dir + "/" + modelRel))
+        vits.tokens = UnsafePointer(strdup(dir + "/" + tokensRel))
         if let lexiconRel = firstFile(matching: { $0 == "lexicon.txt" || $0.hasPrefix("lexicon") && $0.hasSuffix(".txt") }) {
-            vits.lexicon = strdup(dir + "/" + lexiconRel)
+            vits.lexicon = UnsafePointer(strdup(dir + "/" + lexiconRel))
         }
         if let espeakRel = firstFile(matching: { $0 == "espeak-ng-data" && Self.isDirectory(dir + "/" + $0) }) {
-            vits.data_dir = strdup(dir + "/" + espeakRel)
+            vits.data_dir = UnsafePointer(strdup(dir + "/" + espeakRel))
         }
         if let dictRel = firstFile(matching: { $0 == "dict" && Self.isDirectory(dir + "/" + $0) }) {
-            vits.dict_dir = strdup(dir + "/" + dictRel)
+            vits.dict_dir = UnsafePointer(strdup(dir + "/" + dictRel))
         }
         vits.noise_scale = 0.667
         vits.noise_scale_w = 0.8
@@ -185,12 +185,12 @@ final class OfflineTTSManager: ObservableObject {
         model.vits = vits
         model.num_threads = 2
         model.debug = 0
-        model.provider = strdup("cpu")
+        model.provider = UnsafePointer(strdup("cpu"))
 
         var config = SherpaOnnxOfflineTtsConfig()
         config.model = model
         let fsts = ["date.fst", "number.fst"].compactMap { fm.fileExists(atPath: dir + "/" + $0) ? dir + "/" + $0 : nil }
-        if !fsts.isEmpty { config.rule_fsts = strdup(fsts.joined(separator: ",")) }
+        if !fsts.isEmpty { config.rule_fsts = UnsafePointer(strdup(fsts.joined(separator: ","))) }
         config.max_num_sentences = 2
 
         guard let tts = SherpaOnnxCreateOfflineTts(&config) else { return nil }
