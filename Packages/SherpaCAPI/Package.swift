@@ -7,6 +7,6 @@ let package = Package(
     name: "SherpaCAPI",
     platforms: [.iOS(.v16)],
     targets: [
-        .target(name: "sherpa_capi", path: ".", publicHeadersPath: "include", sources: ["Sources/sherpa_capi/shim.c"])
+        .target(name: "sherpa_capi", path: ".", sources: ["Sources/sherpa_capi/shim.c"], publicHeadersPath: "include")
     ]
 )
