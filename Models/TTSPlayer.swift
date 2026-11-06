@@ -88,7 +88,7 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     /// 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech。
     /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
-    var offlineProvider: ((String, Gender) async -> Data?)?
+    var offlineProvider: ((String, Gender, String) async -> Data?)?
     var cloudProvider: ((String) async -> Data?)?
     private var audioPlayer: AVAudioPlayer?
     /// 当前段原始文本（未经规则替换），供异步合成完成后的归属校验
@@ -270,8 +270,9 @@ final class TTSPlayer: NSObject, ObservableObject {
 
         Task { @MainActor in
             // 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech
-            let segGender = roleGenders[segments.indices.contains(currentIndex) ? (segments[currentIndex].characterId ?? "") : ""] ?? .neutral
-            if let offlineProvider, let data = await offlineProvider(text, segGender), isPlaying, speakingRawText == raw {
+            let segId = segments.indices.contains(currentIndex) ? (segments[currentIndex].characterId ?? "") : ""
+            let segGender = roleGenders[segId] ?? .neutral
+            if let offlineProvider, let data = await offlineProvider(text, segGender, segId), isPlaying, speakingRawText == raw {
                 playAudioData(data, fallbackText: text, notice: "离线语音包合成失败，已回退")
                 return
             }

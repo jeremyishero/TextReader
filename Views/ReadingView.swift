@@ -417,16 +417,18 @@ struct ReadingView: View {
             guard client.isConfigured else { return nil }
             return try? await client.synthesize(text)
         }
-        // 离线语音包注入（优先于云端）：已下载且启用的包在手机本地合成；多音色包按角色性别自动选音色
-        player.offlineProvider = { text, gender in
-            guard settings.offlineTTSEnabled, !settings.offlineTTSPackId.isEmpty else { return nil }
-            let packId = settings.offlineTTSPackId
-            let male = Int32(settings.offlineTTSMaleSID)
-            let female = Int32(settings.offlineTTSFemaleSID)
+        // 离线语音包注入（优先于云端）：按角色性别池轮转分配——不同角色配不同声音
+        player.offlineProvider = { text, gender, characterId in
+            guard settings.offlineTTSEnabled else { return nil }
+            let maleSIDs = settings.offlineTTSMaleSIDs
+                .split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            let femaleSIDs = settings.offlineTTSFemaleSIDs
+                .split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
             let speed = player.rate
-            return await OfflineTTSManager.shared.synthesize(
-                text: text, packId: packId, gender: gender,
-                maleSID: male, femaleSID: female, speed: speed)
+            return await OfflineTTSManager.shared.synthesizeForCharacter(
+                text: text, characterId: characterId, gender: gender,
+                packGenders: settings.offlinePackGenders,
+                maleSIDs: maleSIDs, femaleSIDs: femaleSIDs, speed: speed)
         }
         player.autoVoiceSwitch = settings.autoVoiceSwitch
         // 云端合成失败自动回退本地时，给用户一个明确提示（不再静默）

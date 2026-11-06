@@ -40,14 +40,27 @@ final class AppSettings: ObservableObject {
     @Published var offlineTTSEnabled: Bool = false { didSet { save("offlineTTSEnabled", offlineTTSEnabled) } }
     /// 当前使用的离线语音包 id（对应 OfflineTTSManager.packs）
     @Published var offlineTTSPackId: String = "" { didSet { save("offlineTTSPackId", offlineTTSPackId) } }
-    /// 多音色包（如 AISHELL3）的男声说话人编号（男角色朗读自动使用）
-    @Published var offlineTTSMaleSID: Int = 0 { didSet { save("offlineTTSMaleSID", offlineTTSMaleSID) } }
-    /// 多音色包（如 AISHELL3）的女声说话人编号（女角色朗读自动使用）
-    @Published var offlineTTSFemaleSID: Int = 1 { didSet { save("offlineTTSFemaleSID", offlineTTSFemaleSID) } }
+    /// 多音色包男声说话人编号列表（逗号分隔，男角色依次轮转使用不同男声）
+    @Published var offlineTTSMaleSIDs: String = "0" { didSet { save("offlineTTSMaleSIDs", offlineTTSMaleSIDs) } }
+    /// 多音色包女声说话人编号列表（逗号分隔，女角色依次轮转使用不同女声）
+    @Published var offlineTTSFemaleSIDs: String = "1" { didSet { save("offlineTTSFemaleSIDs", offlineTTSFemaleSIDs) } }
+    /// 每个语音包的性别标注：packId → "female"/"male"/"multi"（朗读按性别池轮转分配）
+    @Published var offlinePackGenders: [String: String] = [
+        "theresa": "female", "keqing": "female", "melo": "female",
+        "eula": "female", "bronya": "female", "echo": "female",
+        "zenyatta": "male", "fanchen-c": "male", "fanchen-unity": "",
+        "aishell3": "multi",
+    ] { didSet { persistPackGenders() } }
 
     init() { load() }
 
     // MARK: 持久化
+
+    private func persistPackGenders() {
+        if let data = try? JSONEncoder().encode(offlinePackGenders) {
+            UserDefaults.standard.set(data, forKey: "offlinePackGenders")
+        }
+    }
 
     private func load() {
         let d = UserDefaults.standard
@@ -77,8 +90,12 @@ final class AppSettings: ObservableObject {
         if let v = d.string(forKey: "cloudTTSVoice"), !v.isEmpty { cloudTTSVoice = v }
         if d.object(forKey: "offlineTTSEnabled") != nil { offlineTTSEnabled = d.bool(forKey: "offlineTTSEnabled") }
         if let p = d.string(forKey: "offlineTTSPackId") { offlineTTSPackId = p }
-        if d.object(forKey: "offlineTTSMaleSID") != nil { offlineTTSMaleSID = d.integer(forKey: "offlineTTSMaleSID") }
-        if d.object(forKey: "offlineTTSFemaleSID") != nil { offlineTTSFemaleSID = d.integer(forKey: "offlineTTSFemaleSID") }
+        if let m = d.string(forKey: "offlineTTSMaleSIDs") { offlineTTSMaleSIDs = m }
+        if let f = d.string(forKey: "offlineTTSFemaleSIDs") { offlineTTSFemaleSIDs = f }
+        if let data = d.data(forKey: "offlinePackGenders"),
+           let dict = try? JSONDecoder().decode([String: String].self, from: data) {
+            offlinePackGenders = dict
+        }
     }
 
     /// nil 值不能直接 set：首次启动 load() 会把 String? 属性置为 nil，didSet 触发本方法时

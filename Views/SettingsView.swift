@@ -64,9 +64,17 @@ struct SettingsView: View {
                     Toggle("启用离线语音包朗读", isOn: $settings.offlineTTSEnabled)
                     Text("下载到手机本地，完全离线合成，优先级高于云端 TTS。模型来自 sherpa-onnx 社区开放模型（国内经 hf-mirror 镜像下载）。")
                         .font(.caption).foregroundColor(.secondary)
-                    Stepper("男声编号：\(settings.offlineTTSMaleSID)", value: $settings.offlineTTSMaleSID, in: 0...183)
-                    Stepper("女声编号：\(settings.offlineTTSFemaleSID)", value: $settings.offlineTTSFemaleSID, in: 0...183)
-                    Text("朗读时自动按角色性别分配音色：男角色用男声编号、女角色用女声编号（仅多音色包 AISHELL3 有效，单音色包忽略）。用各行试听按钮找到满意的编号后填到这里。")
+                    TextField("男声编号列表（逗号分隔，如 0,3,7）", text: $settings.offlineTTSMaleSIDs)
+                        .font(.caption)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    TextField("女声编号列表（逗号分隔，如 1,2,5）", text: $settings.offlineTTSFemaleSIDs)
+                        .font(.caption)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Text("多音色包（AISHELL3，174 人）朗读时：男角色依次轮转男声编号列表、女角色依次轮转女声编号列表——不同角色自动配不同声音。单音色包忽略编号。先下载并试听，把满意的男女声编号填进来（逗号分隔可填多个）。")
+                        .font(.caption2).foregroundColor(.secondary)
+                    Text("角色分配规则：优先在已下载的「女声」包之间轮转（女角色）/「男声」包之间轮转（男角色）；没有对应性别包时用多音色包按编号列表轮转。每个角色分配后固定不变，改标注或编号后下次朗读重新分配。")
                         .font(.caption2).foregroundColor(.secondary)
                     ForEach(OfflineTTSManager.packs) { pack in
                         packRow(pack)
@@ -190,6 +198,23 @@ struct SettingsView: View {
                 Text("\(pack.gender) · 约 \(pack.sizeMB)MB")
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                // 性别标注：决定该包进入哪个性别池（女声池/男声池/多音色）
+                if installed {
+                    Picker("性别标注", selection: Binding(
+                        get: { settings.offlinePackGenders[pack.id] ?? "" },
+                        set: { newValue in
+                            settings.offlinePackGenders[pack.id] = newValue
+                            offlineMgr.resetAssignments()
+                        }
+                    )) {
+                        Text("标注：女声").tag("female")
+                        Text("标注：男声").tag("male")
+                        Text("标注：多音色").tag("multi")
+                        Text("标注：不参与").tag("")
+                    }
+                    .font(.caption2)
+                    .pickerStyle(.menu)
+                }
                 if offlineMgr.downloading.contains(pack.id) {
                     ProgressView(value: offlineMgr.progress[pack.id] ?? 0)
                         .progressViewStyle(.linear)
@@ -224,8 +249,8 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("男声试听")
-                // 启用 / 停用
-                Button(isCurrent ? "停用" : "使用") {
+                // 启用 / 停用（多包轮转模式下不再需要单独启用，保留用于主旁白声指定）
+                Button(isCurrent ? "停用" : "设为旁白") {
                     settings.offlineTTSPackId = isCurrent ? "" : pack.id
                     settings.offlineTTSEnabled = !isCurrent
                 }
@@ -266,15 +291,16 @@ struct SettingsView: View {
         }
     }
 
-    /// 用离线语音包按性别编号合成一句试听并播放
+    /// 用离线语音包按性别编号列表的第一个合成试听（多音色包换列表第一个值再试听可挑音色）
     private func previewOfflinePack(_ pack: VoicePackInfo, gender: Gender) {
         Task {
-            if let wav = await offlineMgr.synthesize(
+            let sidList = gender == .male
+                ? settings.offlineTTSMaleSIDs.split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                : settings.offlineTTSFemaleSIDs.split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+            if let wav = await offlineMgr.synthesizePreview(
                 text: "你好，我是中国人",
                 packId: pack.id,
-                gender: gender,
-                maleSID: Int32(settings.offlineTTSMaleSID),
-                femaleSID: Int32(settings.offlineTTSFemaleSID),
+                sid: sidList.first ?? (gender == .male ? 0 : 1),
                 speed: 1.0
             ) {
                 VoicePreviewer.shared.playAudio(wav)

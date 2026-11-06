@@ -44,13 +44,25 @@ final class OfflineTTSManager: ObservableObject {
     /// 仓库均已核实存在于 hf-mirror（不存在会导致 App 内下载必 404）
     static let packs: [VoicePackInfo] = [
         .init(id: "theresa", repo: "csukuangfj/vits-zh-hf-theresa",
-              displayName: "Theresa · 标准女声", gender: "女声", sizeMB: 115),
+              displayName: "Theresa · 女声", gender: "女声", sizeMB: 115),
         .init(id: "keqing", repo: "csukuangfj/vits-zh-hf-keqing",
-              displayName: "刻晴 · 标准女声", gender: "女声", sizeMB: 115),
-        .init(id: "fanchen-c", repo: "csukuangfj/vits-zh-hf-fanchen-C",
-              displayName: "Fanchen-C · 音色需试听", gender: "试听确认", sizeMB: 115),
+              displayName: "刻晴 · 女声", gender: "女声", sizeMB: 115),
+        .init(id: "eula", repo: "csukuangfj/vits-zh-hf-eula",
+              displayName: "优菈 · 女声", gender: "女声", sizeMB: 115),
+        .init(id: "bronya", repo: "csukuangfj/vits-zh-hf-bronya",
+              displayName: "布洛妮娅 · 女声", gender: "女声", sizeMB: 115),
+        .init(id: "echo", repo: "csukuangfj/vits-zh-hf-echo",
+              displayName: "Echo · 女声", gender: "女声", sizeMB: 115),
         .init(id: "melo", repo: "csukuangfj/vits-melo-tts-zh_en",
-              displayName: "Melo · 中英混读女声", gender: "女声", sizeMB: 163),
+              displayName: "Melo · 女声（中英混读）", gender: "女声", sizeMB: 163),
+        .init(id: "zenyatta", repo: "csukuangfj/vits-zh-hf-zenyatta",
+              displayName: "禅雅塔 · 男声（候选）", gender: "男声", sizeMB: 115),
+        .init(id: "fanchen-c", repo: "csukuangfj/vits-zh-hf-fanchen-C",
+              displayName: "Fanchen-C · 男声（候选）", gender: "男声", sizeMB: 115),
+        .init(id: "fanchen-unity", repo: "csukuangfj/vits-zh-hf-fanchen-unity",
+              displayName: "Fanchen-unity · 试听确认", gender: "试听确认", sizeMB: 115),
+        .init(id: "aishell3", repo: "csukuangfj/icefall-tts-aishell3-vits-low-2024-04-06",
+              displayName: "AISHELL3 · 多音色 174 人（男女都有）", gender: "多音色", sizeMB: 100),
     ]
 
     private let fm = FileManager.default
@@ -65,7 +77,9 @@ final class OfflineTTSManager: ObservableObject {
         packsRoot.appendingPathComponent(id, isDirectory: true)
     }
     func isInstalled(_ id: String) -> Bool {
-        fm.fileExists(atPath: packDir(id).appendingPathComponent("tokens.txt").path)
+        // tokens.txt 可能在包根目录或 data/ 等子目录（icefall aishell3 布局）
+        let subpaths = (try? fm.subpathsOfDirectory(atPath: packDir(id).path)) ?? []
+        return subpaths.contains { ($0 as NSString).lastPathComponent == "tokens.txt" }
     }
 
     // MARK: 下载
@@ -223,10 +237,8 @@ final class OfflineTTSManager: ObservableObject {
 
     // MARK: 合成
 
-    /// 合成一段文本 → WAV Data。引擎按包缓存、串行加载；失败返回 nil（播放器自动回退云端/本地）。
-    /// 多音色包：按角色性别自动选 sid（maleSID/femaleSID）；单音色包忽略 sid（固定 0）。
-    func synthesize(text: String, packId: String, gender: Gender,
-                    maleSID: Int32, femaleSID: Int32, speed: Float) async -> Data? {
+    /// 试听用：指定包 + 指定编号合成（单音色包自动忽略编号）
+    func synthesizePreview(text: String, packId: String, sid: Int32, speed: Float) async -> Data? {
         guard !text.isEmpty, isInstalled(packId) else { return nil }
         let dir = packDir(packId).path
         return await withCheckedContinuation { cont in
@@ -235,13 +247,108 @@ final class OfflineTTSManager: ObservableObject {
                 guard let tts = self.loadEngine(packId: packId, dir: dir) else {
                     cont.resume(returning: nil); return
                 }
-                let sid: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1
-                    ? (gender == .male ? maleSID : femaleSID)
-                    : 0
+                let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
+                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed)
+                cont.resume(returning: data)
+            }
+        }
+    }
+
+    /// 角色分配缓存：characterId → (packId, sid)，同一角色（含别名）全程固定同一声音
+    private var roleAssignments: [String: (packId: String, sid: Int32)] = [:]
+    /// 同性别池轮转游标（保证不同角色分到不同声音）
+    private var rotationCursor: [String: Int] = [:]
+
+    /// 角色合成入口：按性别池轮转分配——单音色性别包池 → 多音色包(编号列表) → nil（回退云端/本地）。
+    /// 同一角色固定分配；不同角色依次取池内不同包/不同编号，实现「多个男角色不同男声、多个女角色不同女声」。
+    func synthesizeForCharacter(text: String, characterId: String, gender: Gender,
+                                packGenders: [String: String],
+                                maleSIDs: [Int32], femaleSIDs: [Int32],
+                                speed: Float) async -> Data? {
+        guard !text.isEmpty else { return nil }
+        return await withCheckedContinuation { cont in
+            engineQueue.async { [weak self] in
+                guard let self else { cont.resume(returning: nil); return }
+                let plan = self.assign(characterId: characterId, gender: gender,
+                                       packGenders: packGenders,
+                                       maleSIDs: maleSIDs, femaleSIDs: femaleSIDs)
+                guard let (packId, sid) = plan, self.isInstalled(packId) else {
+                    cont.resume(returning: nil); return
+                }
+                let dir = self.packDir(packId).path
+                guard let tts = self.loadEngine(packId: packId, dir: dir) else {
+                    cont.resume(returning: nil); return
+                }
                 let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: sid, speed: speed)
                 cont.resume(returning: data)
             }
         }
+    }
+
+    /// 分配：优先单音色性别包池轮转，其次多音色包 + 编号列表轮转。分配结果按角色缓存。
+    private func assign(characterId: String, gender: Gender,
+                        packGenders: [String: String],
+                        maleSIDs: [Int32], femaleSIDs: [Int32]) -> (String, Int32)? {
+        if let cached = roleAssignments[characterId],
+           isInstalled(cached.packId),
+           packGenders[cached.packId] != nil {
+            return (cached.packId, cached.sid)
+        }
+        let installedIds = Self.packs.map { $0.id }.filter { isInstalled($0) }
+        func pool(_ g: String) -> [String] {
+            installedIds.filter { packGenders[$0] == g }
+        }
+        let femalePacks = pool("female")
+        let malePacks = pool("male")
+        let multiPacks = pool("multi")
+
+        func rotatePack(_ poolIds: [String], cursorKey: String) -> String {
+            let idx = rotationCursor[cursorKey] ?? 0
+            rotationCursor[cursorKey] = (idx + 1) % poolIds.count
+            return poolIds[idx % poolIds.count]
+        }
+        func rotateSID(_ list: [Int32], cursorKey: String) -> Int32 {
+            guard !list.isEmpty else { return 0 }
+            let idx = rotationCursor[cursorKey] ?? 0
+            rotationCursor[cursorKey] = (idx + 1) % list.count
+            return list[idx % list.count]
+        }
+
+        var packId: String? = nil
+        var sid: Int32 = 0
+        switch gender {
+        case .male:
+            if !malePacks.isEmpty {
+                packId = rotatePack(malePacks, cursorKey: "malePack")
+            } else if !multiPacks.isEmpty, !maleSIDs.isEmpty {
+                packId = multiPacks[0]
+                sid = rotateSID(maleSIDs, cursorKey: "maleSID")
+            }
+        case .female:
+            if !femalePacks.isEmpty {
+                packId = rotatePack(femalePacks, cursorKey: "femalePack")
+            } else if !multiPacks.isEmpty, !femaleSIDs.isEmpty {
+                packId = multiPacks[0]
+                sid = rotateSID(femaleSIDs, cursorKey: "femaleSID")
+            }
+        case .neutral:
+            if !femalePacks.isEmpty {
+                packId = rotatePack(femalePacks, cursorKey: "femalePack")
+            } else if !malePacks.isEmpty {
+                packId = rotatePack(malePacks, cursorKey: "malePack")
+            } else if !multiPacks.isEmpty {
+                packId = multiPacks[0]
+                sid = femaleSIDs.first ?? 0
+            }
+        }
+        guard let p = packId else { return nil }
+        roleAssignments[characterId] = (p, sid)
+        return (p, sid)
+    }
+
+    /// 清除角色分配缓存（性别标注/编号列表变化后调用，下次朗读重新分配）
+    func resetAssignments() {
+        engineQueue.async { [weak self] in self?.roleAssignments.removeAll() }
     }
 
     private func engineSynthesize(text: String, packId: String, dir: String,
@@ -275,12 +382,12 @@ final class OfflineTTSManager: ObservableObject {
             return children.sorted().first
         }
         guard let modelRel = firstFile(matching: { $0.hasSuffix(".onnx") }),
-              let tokensRel = firstFile(matching: { $0 == "tokens.txt" }) else { return nil }
+              let tokensRel = firstFile(matching: { $0.hasSuffix("tokens.txt") }) else { return nil }
 
         var vits = SherpaOnnxOfflineTtsVitsModelConfig()
         vits.model = UnsafePointer(strdup(dir + "/" + modelRel))
         vits.tokens = UnsafePointer(strdup(dir + "/" + tokensRel))
-        if let lexiconRel = firstFile(matching: { $0 == "lexicon.txt" || $0.hasPrefix("lexicon") && $0.hasSuffix(".txt") }) {
+        if let lexiconRel = firstFile(matching: { $0.hasSuffix("lexicon.txt") }) {
             vits.lexicon = UnsafePointer(strdup(dir + "/" + lexiconRel))
         }
         if let espeakRel = firstFile(matching: { $0 == "espeak-ng-data" && Self.isDirectory(dir + "/" + $0) }) {
@@ -301,7 +408,11 @@ final class OfflineTTSManager: ObservableObject {
 
         var config = SherpaOnnxOfflineTtsConfig()
         config.model = model
-        let fsts = ["date.fst", "number.fst"].compactMap { fm.fileExists(atPath: dir + "/" + $0) ? dir + "/" + $0 : nil }
+        // rule fsts 可能位于 data/ 等子目录（icefall aishell3 布局）
+        let fsts = (fm.subpaths(atPath: dir) ?? [])
+            .filter { ["date.fst", "number.fst"].contains(($0 as NSString).lastPathComponent) }
+            .sorted()
+            .map { dir + "/" + $0 }
         if !fsts.isEmpty { config.rule_fsts = UnsafePointer(strdup(fsts.joined(separator: ","))) }
         config.max_num_sentences = 2
 
