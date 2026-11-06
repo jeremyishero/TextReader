@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CoreLogic
 import sherpa_capi
 
 /// 可下载的离线语音包（模型来自 sherpa-onnx 社区，HuggingFace 托管，国内经 hf-mirror.com 镜像下载）。
@@ -70,7 +71,7 @@ final class OfflineTTSManager: ObservableObject {
             }
             await MainActor.run {
                 self.downloading.remove(pack.id)
-                if case .failure(let msg) = result {
+                if let msg = result {
                     self.progress[pack.id] = nil
                     self.errors[pack.id] = msg
                     // 清掉半成品，避免误判已安装
@@ -93,45 +94,45 @@ final class OfflineTTSManager: ObservableObject {
     private static func downloadPackFiles(
         pack: VoicePackInfo, destDir: URL,
         onProgress: @escaping (Double) -> Void
-    ) async -> Result<Void, String> {
+    ) async -> String? {
         let fm = FileManager.default
         // 1) 文件清单（经 hf-mirror API；HF 主站在国内不可达）
         guard let apiURL = URL(string: "https://hf-mirror.com/api/models/" + pack.repo) else {
-            return .failure("地址无效")
+            return "地址无效"
         }
         guard let (listData, resp) = try? await session.data(from: apiURL),
               let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            return .failure("无法连接下载源（hf-mirror），请检查网络后重试")
+            return "无法连接下载源（hf-mirror），请检查网络后重试"
         }
         guard let obj = try? JSONSerialization.jsonObject(with: listData) as? [String: Any],
               let siblings = obj["siblings"] as? [[String: Any]] else {
-            return .failure("获取文件清单失败")
+            return "获取文件清单失败"
         }
         let paths = siblings.compactMap { $0["rfilename"] as? String }.filter { keepFile($0) }
-        guard !paths.isEmpty else { return .failure("源仓库没有可下载文件") }
+        guard !paths.isEmpty else { return "源仓库没有可下载文件" }
 
         // 2) 逐文件下载（保留相对路径；download(to:) 落盘不占大内存）
         try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
         for (i, path) in paths.enumerated() {
             guard let url = URL(string: "https://hf-mirror.com/" + pack.repo + "/resolve/main/" + path) else {
-                return .failure("文件地址无效：" + path)
+                return "文件地址无效：" + path
             }
             do {
                 let (tmp, dlResp) = try await session.download(from: url)
                 guard let http = dlResp as? HTTPURLResponse, http.statusCode == 200 else {
                     let code = (dlResp as? HTTPURLResponse)?.statusCode ?? -1
-                    return .failure("下载 " + path + " 失败（HTTP " + String(code) + "）")
+                    return "下载 " + path + " 失败（HTTP " + String(code) + "）"
                 }
                 let fileURL = destDir.appendingPathComponent(path)
                 try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try? fm.removeItem(at: fileURL)
                 try fm.moveItem(at: tmp, to: fileURL)
             } catch {
-                return .failure("下载 " + path + " 失败：" + error.localizedDescription)
+                return "下载 " + path + " 失败：" + error.localizedDescription
             }
             onProgress(Double(i + 1) / Double(paths.count))
         }
-        return .success(())
+        return nil
     }
 
     /// 该下载仓库里的哪些文件（跳过文档/脚本/测试音频/压缩包本身）。
