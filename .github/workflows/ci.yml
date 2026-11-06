@@ -72,11 +72,7 @@ jobs:
           echo "SHERPA_LIB=$SHERPA_LIB | ORT_LIB=$ORT_LIB"
           mkdir -p diag_inc
           cp Packages/SherpaCAPI/include/sherpa_capi.h diag_inc/
-          printf 'module sherpa_capi {
-  umbrella header "sherpa_capi.h"
-  export *
-}
-' > diag_inc/module.modulemap
+          printf 'module sherpa_capi {\n  umbrella header "sherpa_capi.h"\n  export *\n}\n' > diag_inc/module.modulemap
           xcrun swiftc diag/main.swift "$SHERPA_LIB" "$ORT_LIB" -I diag_inc -lc++ -o diag_bin
           ./diag_bin vits-zh-hf-theresa
 
