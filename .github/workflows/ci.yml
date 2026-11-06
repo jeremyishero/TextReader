@@ -63,21 +63,6 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Diagnose offline TTS on macOS
-        run: |
-          curl -sL --fail -o d.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-zh-hf-theresa.tar.bz2
-          tar xjf d.tar.bz2
-          echo "--- SherpaOnnxMacOS files:"
-          find Vendor/SherpaOnnxMacOS.xcframework -type f | head -20
-          SHERPA_LIB=$(find Vendor/SherpaOnnxMacOS.xcframework -type f -name "sherpa-onnx*" ! -name "*.h" ! -name "*.plist" | head -1)
-          ORT_LIB=$(find Vendor/OnnxruntimeMacOS.xcframework -type f -name "onnxruntime*" ! -path "*Headers*" ! -name "*.plist" | head -1)
-          echo "SHERPA_LIB=$SHERPA_LIB | ORT_LIB=$ORT_LIB"
-          mkdir -p diag_inc
-          cp Packages/SherpaCAPI/include/sherpa_capi.h diag_inc/
-          printf 'module sherpa_capi {\n  umbrella header "sherpa_capi.h"\n  export *\n}\n' > diag_inc/module.modulemap
-          xcrun swiftc diag/main.swift "$SHERPA_LIB" "$ORT_LIB" -I diag_inc -lc++ -o diag_bin
-          ./diag_bin vits-zh-hf-theresa
-
       - name: CoreLogic unit tests
         run: |
           cd Packages/CoreLogic
