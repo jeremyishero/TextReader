@@ -35,7 +35,7 @@ final class OfflineTTSManager: ObservableObject {
 
     private let fm = FileManager.default
     private let engineQueue = DispatchQueue(label: "offline.tts.engine")   // 引擎加载/合成串行
-    private var engines: [String: UnsafePointer<SherpaOnnxOfflineTts>] = [:]
+    private var engines: [String: OpaquePointer] = [:]
 
     private var packsRoot: URL {
         fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -154,7 +154,7 @@ final class OfflineTTSManager: ObservableObject {
     }
 
     /// 从包目录探测文件布局（兼容 piper / hf-theresa / icefall-aishell3 等不同结构）并加载引擎。
-    private func loadEngine(packId: String, dir: String) -> UnsafePointer<SherpaOnnxOfflineTts>? {
+    private func loadEngine(packId: String, dir: String) -> OpaquePointer? {
         if let cached = engines[packId] { return cached }
         let fm = FileManager.default
 
