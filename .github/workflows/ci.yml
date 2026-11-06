@@ -36,6 +36,14 @@ jobs:
           done
           echo "--- after normalize:"
           ls Vendor
+          # onnxruntime 仅作链接库：去掉其 Headers/Modules，避免两个 module.modulemap 冲突
+          for plat in Vendor/onnxruntime.xcframework/*/; do
+            rm -rf "$plat/Headers" "$plat/Modules"
+          done
+          for i in 0 1 2 3; do
+            plutil -remove "AvailableLibraries.$i.HeadersPath" Vendor/onnxruntime.xcframework/Info.plist 2>/dev/null || true
+            plutil -remove "AvailableLibraries.$i.ModulesPath" Vendor/onnxruntime.xcframework/Info.plist 2>/dev/null || true
+          done
 
       - name: Install xcodegen
         run: brew install xcodegen
