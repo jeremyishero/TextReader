@@ -222,4 +222,80 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertTrue(lin?.aliases.contains("他") == true || r.roles.count == 2,
                       "状语后的代词『他』应回指男性角色，而不是新建角色")
     }
+
+    // MARK: - v4 用户实测误判回归
+
+    /// 用户实测原句：笑眯眯 / 满口胡 / 反倒 曾被注册成角色。
+    private let userReportedSample = """
+    陈公公笑眯眯道：“殿下恕罪，老奴年纪大了，腿脚比较慢。”
+
+    又想起当初这人满口胡言乱语，顾琅听着他满口胡话，不由得皱了皱眉。
+
+    顾琅反倒要去入赘，反倒想起上回那个不知从哪儿冒出来的，反倒笑了笑，反倒急忙走到床边。
+
+    顾琅道：“此事再议。”
+    """
+
+    func testUserReportedFalsePositivesAreNotRoles() {
+        let r = CharacterAnalyzer().analyze(userReportedSample)
+        let names = Set(r.roles.map { $0.canonicalName })
+        print("V4_USER_CASE: " + names.sorted().joined(separator: ","))
+        for junk in ["笑眯眯", "满口胡", "满口", "胡言", "胡话", "反倒", "笑眯"] {
+            XCTAssertFalse(names.contains(junk), "『\(junk)』是描写词/副词，不应被识别为角色")
+        }
+        XCTAssertTrue(names.contains("顾琅"), "真人名 顾琅 应保留")
+        XCTAssertTrue(names.contains("陈公公"), "带称谓的真人名 陈公公 应保留")
+        XCTAssertLessThanOrEqual(r.roles.count, 4, "角色数应收敛，实为 \(names)")
+    }
+
+    /// 关键：用完全不在任何词表里的「新造描写词」验证机制，而不是补词表打地鼠。
+    func testUnseenDescriptiveWordsNeverBecomeRoles() {
+        let text = """
+        顾琅慢吞吞道：“来了。”
+        徐镜儿气鼓鼓说：“哼。”
+        顾琅斜睨道：“随你。”
+        徐镜儿撇嘴道：“知道了。”
+        """
+        let r = CharacterAnalyzer().analyze(text)
+        let names = Set(r.roles.map { $0.canonicalName })
+        print("V4_UNSEEN_JUNK: " + names.sorted().joined(separator: ","))
+        for junk in ["慢吞吞", "气鼓鼓", "斜睨", "撇嘴", "顾琅斜睨", "徐镜儿气鼓鼓"] {
+            XCTAssertFalse(names.contains(junk), "未登记的新描写词『\(junk)』也不应成为角色")
+        }
+        XCTAssertTrue(names.contains("顾琅"))
+        XCTAssertTrue(names.contains("徐镜儿"))
+    }
+
+    /// 白名单仍是补漏入口：用户指定的名字不受人名形态门槛限制。
+    func testWhitelistStillOverridesShape() {
+        let r = CharacterAnalyzer().analyze(userReportedSample, userWhitelist: ["笑眯眯"])
+        XCTAssertTrue(r.roles.contains { $0.canonicalName == "笑眯眯" },
+                      "白名单词即使长得像描写词，也必须按用户指定注册为角色")
+    }
+
+    // MARK: - 角色表导出 Excel
+
+    func testXlsxRoleExportRoundTrip() throws {
+        let roles = [
+            CharacterRole(id: "r1", canonicalName: "慕容衍",
+                          aliases: ["慕容衍", "太子", "吴七"], gender: .male, voiceHint: "male"),
+            CharacterRole(id: "r2", canonicalName: "徐镜儿",
+                          aliases: ["徐镜儿"], gender: .female)
+        ]
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try XlsxRoleExporter().export(roles: roles, quoteCounts: ["r1": 12, "r2": 7], to: url)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "应生成 .xlsx 文件")
+
+        // 导出的表必须能被现有导入器原样读回（导出→修改→导入闭环）
+        let parsed = XlsxRoleParser().parseRoles(from: url)
+        XCTAssertEqual(parsed.count, 2, "导出表应能被导入器读回")
+        XCTAssertEqual(parsed.first?.name, "慕容衍")
+        XCTAssertEqual(parsed.first?.gender, .male)
+        XCTAssertEqual(parsed.first?.aliases, ["太子", "吴七"], "别名列应按顿号还原")
+        XCTAssertEqual(parsed.last?.name, "徐镜儿")
+        XCTAssertEqual(parsed.last?.gender, .female)
+    }
 }

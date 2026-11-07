@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import AVFoundation
 import CoreLogic
 import UniformTypeIdentifiers
@@ -53,6 +54,10 @@ struct AnalysisView: View {
     @State private var importSummary: String? = nil
     // 从表格(.xlsx)导入角色
     @State private var showXlsxImporter = false
+    // 导出当前角色列表为 .xlsx 并分享
+    @State private var showShareSheet = false
+    @State private var exportURL: URL? = nil
+    @State private var exportError: String? = nil
     // 导入方式二选一：替换所有已存在角色 / 新增到现有角色
     @State private var showImportModeDialog = false
     @State private var pendingImport: [(name: String, gender: Gender, aliases: [String])]? = nil
@@ -150,6 +155,11 @@ struct AnalysisView: View {
             .sheet(isPresented: $showTextImportSheet) {
                 textImportSheet
             }
+            .sheet(isPresented: $showShareSheet) {
+                if let exportURL {
+                    ActivityView(url: exportURL)
+                }
+            }
             .fileImporter(
                 isPresented: $showXlsxImporter,
                 allowedContentTypes: [xlsxType],
@@ -192,6 +202,36 @@ struct AnalysisView: View {
             } message: {
                 Text(importSummary ?? "")
             }
+            .alert("导出失败", isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(exportError ?? "")
+            }
+        }
+    }
+
+    // MARK: 导出角色表(.xlsx)
+
+    /// 把当前角色列表写成与「从表格导入」兼容的 .xlsx，再调系统分享面板
+    ///（隔空投送 / 存储到文件 / 微信等）。台词数从当前解析结果实时统计。
+    private func exportRolesToXlsx() {
+        var counts: [String: Int] = [:]
+        for seg in analysis.segments {
+            if let id = seg.characterId { counts[id, default: 0] += 1 }
+        }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyyMMdd-HHmm"
+        let name = "角色表-\(fmt.string(from: Date())).xlsx"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        do {
+            try XlsxRoleExporter().export(roles: analysis.roles, quoteCounts: counts, to: url)
+            exportURL = url
+            showShareSheet = true
+        } catch {
+            exportError = error.localizedDescription
         }
     }
 
@@ -300,6 +340,19 @@ struct AnalysisView: View {
                     }
                     .buttonStyle(.bordered)
                 }
+                HStack {
+                    Button {
+                        exportRolesToXlsx()
+                    } label: {
+                        Label("导出角色表(.xlsx)", systemImage: "square.and.arrow.up")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(analysis.roles.isEmpty)
+                }
+                Text("导出的表格可用「从表格导入」再导回，方便在电脑上批量改名/改性别。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
                 Text("长按任一角色可进入多选批量删除")
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -955,4 +1008,13 @@ struct AnalysisView: View {
         case .neutral: return "平"
         }
     }
+}
+
+/// 系统分享面板（UIActivityViewController 的 SwiftUI 包装）。
+private struct ActivityView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

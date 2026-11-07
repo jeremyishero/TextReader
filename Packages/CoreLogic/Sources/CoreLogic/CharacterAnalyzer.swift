@@ -62,6 +62,11 @@ public struct CharacterAnalyzer {
     /// 含口语化说话动词（扯/嘀咕/嘟囔/念叨等），覆盖「慕容衍一边躲一边继续鬼扯，"…」这类动作引语。
     /// v3：严格说话动词。只有这些能触发「主语」捕获，修饰词不再混进来。
     static let speechVerbs = "说|道|曰|问|答|喊|叫|笑|叹|哭|应|回|劝|禀|奏|言|吟|呼|唤|喝|骂|斥|吼|咆哮|叱|扯|嘀咕|嘟囔|嘟哝|念叨|咕哝|嚷|吩咐|补充"
+    /// v4：只在「引号前最后一个分句」的末尾触发的说话动词。
+    /// 去掉极易嵌在普通词里的单字（言/曰/应/回/禀/奏…），
+    /// 例如「满口胡言乱语」里的『言』不再被当成说话提示。
+    static let strictSpeechVerbs = "说|道|问|答|喊|叫|笑|叹|哭|骂|吼|嚷|吩咐|嘀咕|嘟囔|嘟哝|念叨|咕哝|补充|冷哼|接口|应声"
+
     /// v3：状语/修饰词。出现在说话动词前只能作修饰，永远不能注册为人名；同时作为负向特征。
     static let speechModifiers: [String] = [
         "轻声", "低声", "高声", "厉声", "冷声", "沉声", "淡声", "小声", "大声", "冷笑",
@@ -76,6 +81,61 @@ public struct CharacterAnalyzer {
     static func modifiersIn(_ text: String) -> [String] {
         speechModifiers.filter { text.contains($0) }
     }
+    // MARK: v4 人名形态证据
+    // 旧做法：说话动词前的任意汉字串 → 清洗 → 频次 → 注册（所以任何新描写词都能混进来）。
+    // 新做法：一个字符串要成为角色，必须自带「人名形态证据」，否则宁可把台词归旁白。
+    /// 常见复姓：首字不在单姓表里的名字（慕容衍、上官…）靠它过关。
+    static let compoundSurnames: [String] = [
+        "慕容", "欧阳", "上官", "司马", "诸葛", "夏侯", "皇甫", "尉迟", "公孙", "长孙",
+        "宇文", "独孤", "南宫", "西门", "东郭", "令狐", "端木", "澹台", "公羊", "百里",
+        "呼延", "羊舌", "微生", "梁丘", "左丘", "轩辕", "钟离", "闻人", "万俟", "第五",
+        "南门", "颛孙", "太史", "申屠", "仲孙", "司徒", "司空", "亓官", "鲜于", "闾丘"
+    ]
+    /// 非人名用字（器官 / 言语 / 动作 / 副词常用字）。
+    /// 这是字级通用约束，不是针对「笑眯眯 / 满口胡 / 反倒」逐词打地鼠：
+    /// 任何没见过的新描写词，只要由这些字构成就进不来。
+    static let nonNameChars: Set<Character> = Set("口言语话反倒眯眼手脚脸声急忙忽突渐缓默轻慢沉淡扯斜睨瞥走跑抬转摇皱抿咬叹吞咽鼓撇瞧盯瞪哼喘愣怔晃闪扫抚摸捏握拽拉推挡拦退进站坐躺靠笑哭怒骂吵闹")
+
+    /// 人名形态硬门槛：复姓 / 单姓开头、昵称前缀(阿·小·老)+姓氏、或用户白名单；
+    /// 且不得含功能字、非人名用字、状语词、黑名单词。
+    static func hasPersonNameShape(_ s: String, whitelist: Set<String>, blocked: Set<String>) -> Bool {
+        if whitelist.contains(s) { return true }
+        if blocked.contains(s) { return false }
+        guard s.count >= 2, s.count <= 4 else { return false }
+        if s.contains(where: { Self.funcChars.contains($0) || Self.nonNameChars.contains($0) }) { return false }
+        if Self.speechModifiers.contains(s) { return false }
+        // 复姓：复姓 + 1~2 字名（慕容衍 / 欧阳娜娜）
+        for cs in Self.compoundSurnames where s.hasPrefix(cs) {
+            return s.count >= cs.count + 1 && s.count <= cs.count + 2
+        }
+        let chars = Array(s)
+        // 单姓最多「姓 + 2 字」，避免把「顾琅斜睨」整串当成一个名字
+        if GenderLexicon.surnames.contains(String(chars[0])) { return s.count <= 3 }
+        if chars.count >= 2, "阿小老".contains(chars[0]),
+           GenderLexicon.surnames.contains(String(chars[1])) { return s.count <= 3 }
+        return false
+    }
+
+    /// 从「说话动词前的汉字串」里挑出最像人名的子串：最长优先，平局取最靠左。
+    /// 「陈公公笑眯眯」→「陈公公」（保住真主语）；「反倒笑了」→ nil（台词归旁白，绝不硬造角色）。
+    static func extractPersonName(from raw: String, whitelist: Set<String>, blocked: Set<String>) -> String? {
+        let chars = Array(raw)
+        guard !chars.isEmpty else { return nil }
+        var best: String? = nil
+        for i in 0..<chars.count {
+            let maxLen = min(4, chars.count - i)
+            if maxLen < 2 { continue }
+            for len in stride(from: maxLen, through: 2, by: -1) {
+                let cand = String(chars[i..<(i + len)])
+                if Self.hasPersonNameShape(cand, whitelist: whitelist, blocked: blocked) {
+                    if best == nil || cand.count > best!.count { best = cand }
+                    break
+                }
+            }
+        }
+        return best
+    }
+
     /// 去除姓名前后称谓/敬语，得到基名。
     private let trailingTitles = ["娘子","丫鬟","少爷","老爷","夫人","王爷","相公","女侠","仙子","侠士","老爷子","公主","郡主","皇后","太后","妃","妾","妻","姊","妹","嫂","姑","婆","姨","婶","媳","女儿","姐","弟","叔","伯","舅","父","夫","兄","哥","郎","爹","爸","爷","子","婿","郎君","将军","殿下"]
     /// 描述词 → 性别（那少年 / 那女子 等）
@@ -193,6 +253,9 @@ public struct CharacterAnalyzer {
             if whitelist.contains(c) { return true }
             // 黑名单 / 非人名词典：硬过滤（用户自定义过滤词同样在此生效）
             if blocked.contains(c) { return false }
+            // v4：人名形态证据硬门槛。任何描写词 / 副词（笑眯眯 / 满口胡 / 反倒…）
+            // 只要没有姓氏 / 复姓 / 昵称 / 白名单证据，一律不注册；不再靠词表打地鼠。
+            guard Self.hasPersonNameShape(c, whitelist: whitelist, blocked: blocked) else { return false }
             // v3：只在状语位出现、从未作过主语 → 描写词，一票否决
             if (adverbHits[c] ?? 0) > 0, (subjectHits[c] ?? 0) == 0 { return false }
             let subs = subjectHits[c] ?? 0
@@ -514,42 +577,41 @@ public struct CharacterAnalyzer {
         return r
     }
 
-    /// 从引语前的叙述里找最近一次「X [+地/得/了] + 说话提示」，返回 X（已清洗）。
-    /// 副词修饰（「眉飞色舞地道」「缓缓地说」）与量词前缀（「一张脸说」）的捕获不可靠，跳过。
-    /// 从引语前的叙述里找主语（v3）：只用严格说话动词触发，捕获串先剥掉状语修饰词。
+    /// v4 说话人解析：
+    /// ① 只看引号前最后一个分句（旁白中间的「满口胡言乱语」「反倒笑了笑」不再被当作引语提示）；
+    /// ② 说话动词必须落在该分句末尾；
+    /// ③ 捕获串剥掉状语修饰后，必须能提取出「人名形态证据」的子串，否则返回 nil。
     private func resolveSpeaker(_ preceding: String, blocked: Set<String>, whitelist: Set<String> = []) -> String? {
-        let last = String(preceding.suffix(min(preceding.count, 40)))
-        let pattern = "([\\u4e00-\\u9fa5]{1,10})([地得了]?)(?:\(Self.speechVerbs))"
+        let window = String(preceding.suffix(min(preceding.count, 24)))
+        let seps = CharacterSet(charactersIn: "。！？!?；;\n，,：:、")
+        let parts = window.components(separatedBy: seps)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let clause = (parts.last ?? window).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clause.isEmpty else { return nil }
+        let pattern = "([\\u4e00-\\u9fa5]{1,10})([地得了]?)(?:\\(Self.strictSpeechVerbs))$"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let ns = last as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        let matches = re.matches(in: last, range: range)
-        let mods = Self.speechModifiers.sorted { $0.count > $1.count }
-        for m in matches.reversed() {
-            guard m.range(at: 2).location != NSNotFound else { continue }
-            if m.range(at: 2).length > 0 { continue }
-            let start = m.range(at: 1).location
-            if start > 0, Self.measurePrev.contains(Character(ns.substring(with: NSRange(location: start - 1, length: 1)))) {
-                continue
-            }
-            var raw = ns.substring(with: m.range(at: 1))
-            if whitelist.contains(raw) { return raw }
-            var changed = true
-            while changed, !raw.isEmpty {
-                changed = false
-                if let l = raw.last, Self.funcChars.contains(l) || Self.tailNoise.contains(l) {
-                    raw.removeLast(); changed = true; continue
-                }
-                for mod in mods where raw.hasSuffix(mod) && raw.count >= mod.count {
-                    raw = String(raw.dropLast(mod.count)); changed = true; break
-                }
-            }
-            if raw == "他" || raw == "她" { return raw }
-            // 窗口放宽后可能带进句首成分；人名总在动词前的最末端，取末尾 3 字
-            if raw.count > 3 { raw = String(raw.suffix(3)) }
-            if let c = cleanCandidate(raw, blocked: blocked, whitelist: whitelist) { return c }
+        let ns = clause as NSString
+        guard let m = re.firstMatch(in: clause, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        guard m.range(at: 2).length == 0 else { return nil }   // 「X地说」等副词修饰跳过
+        let start = m.range(at: 1).location
+        if start > 0, Self.measurePrev.contains(Character(ns.substring(with: NSRange(location: start - 1, length: 1)))) {
+            return nil
         }
-        return nil
+        var raw = ns.substring(with: m.range(at: 1))
+        if whitelist.contains(raw) { return raw }
+        let mods = Self.speechModifiers.sorted { $0.count > $1.count }
+        var changed = true
+        while changed, !raw.isEmpty {
+            changed = false
+            if let l = raw.last, Self.funcChars.contains(l) || Self.tailNoise.contains(l) {
+                raw.removeLast(); changed = true; continue
+            }
+            for mod in mods where raw.hasSuffix(mod) && raw.count >= mod.count {
+                raw = String(raw.dropLast(mod.count)); changed = true; break
+            }
+        }
+        if raw == "他" || raw == "她" { return raw }
+        return Self.extractPersonName(from: raw, whitelist: whitelist, blocked: blocked)
     }
     /// 扫描误报黑名单（姓氏+常用词组合、常见双字词等；数据驱动，持续补充；另支持用户自定义名单）
     static let nameStopwords: Set<String> = [
