@@ -588,7 +588,7 @@ public struct CharacterAnalyzer {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         let clause = (parts.last ?? window).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clause.isEmpty else { return nil }
-        let pattern = "([\\u4e00-\\u9fa5]{1,10})([地得了]?)(?:\\(Self.strictSpeechVerbs))$"
+        let pattern = "([\\u4e00-\\u9fa5]{1,10})([地得了]?)(?:\(Self.strictSpeechVerbs))$"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = clause as NSString
         guard let m = re.firstMatch(in: clause, range: NSRange(location: 0, length: ns.length)) else { return nil }
