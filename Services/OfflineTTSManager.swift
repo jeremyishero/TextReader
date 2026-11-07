@@ -24,6 +24,8 @@ final class OfflineTTSManager: ObservableObject {
     @Published var downloading: Set<String> = []
     @Published var progress: [String: Double] = [:]     // packId → 0~1
     @Published var errors: [String: String] = [:]       // packId → 最近一次下载失败原因
+    /// 磁盘安装状态版本号：删除/下载完成/导入成功后 +1，驱动 SwiftUI 重绘各行（isInstalled 是磁盘查询，本身不发布变化）
+    @Published var revision: Int = 0
 
     /// 大文件下载专用会话：请求/资源超时放宽，避免 115MB 模型被默认 60s 超时掐断
     private static let session: URLSession = {
@@ -110,7 +112,11 @@ final class OfflineTTSManager: ObservableObject {
                     self.errors[pack.id] = msg
                     // 清掉半成品，避免误判已安装
                     try? self.fm.removeItem(at: self.packDir(pack.id))
+                } else {
+                    self.progress[pack.id] = 1
                 }
+                // 下载结束（成功或失败）都刷新一次行的安装状态
+                self.revision += 1
             }
         }
     }
@@ -122,6 +128,10 @@ final class OfflineTTSManager: ObservableObject {
             }
         }
         try? fm.removeItem(at: packDir(id))
+        // 磁盘已删除，通知 SwiftUI 立即重绘（否则要退出设置页再进入才更新）
+        revision += 1
+        errors[id] = nil
+        progress[id] = nil
     }
 
     /// 逐文件下载（保留仓库内相对路径）。
@@ -237,6 +247,9 @@ final class OfflineTTSManager: ObservableObject {
             try? fm.removeItem(at: dest)
             return "压缩包内缺少 tokens.txt，不是有效的语音包"
         }
+        // 导入成功：立即刷新语音包列表（安装状态是磁盘查询，需显式触发重绘）
+        revision += 1
+        errors[id] = nil
         return nil
     }
 

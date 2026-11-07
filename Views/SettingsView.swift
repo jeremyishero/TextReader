@@ -179,7 +179,8 @@ struct SettingsView: View {
 
     @ViewBuilder
     private func packRow(_ pack: VoicePackInfo) -> some View {
-        let installed = offlineMgr.isInstalled(pack.id)
+        // 读取 revision 建立刷新依赖：磁盘安装状态一变，该行立即重算
+        let installed = offlineMgr.isInstalled(pack.id) && offlineMgr.revision >= 0
         let isCurrent = settings.offlineTTSEnabled && settings.offlineTTSPackId == pack.id
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
