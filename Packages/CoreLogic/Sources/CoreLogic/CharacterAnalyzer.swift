@@ -60,7 +60,22 @@ public struct CharacterAnalyzer {
 
     /// 说话提示词（出现在引语前，用于定位说话人）。
     /// 含口语化说话动词（扯/嘀咕/嘟囔/念叨等），覆盖「慕容衍一边躲一边继续鬼扯，"…」这类动作引语。
-    private let speechCues = "说|道|曰|问|答|喊|叫|笑|怒道|冷笑|大喝|厉声|低声|轻声|高声|叹|哭|喜|愤|应|回|劝|禀|奏|言|吟|呼|唤|喝|骂|斥|吼|咆哮|叱|瞪|咬牙|扯|嘀咕|嘟囔|嘟哝|念叨|咕哝|嚷|吩咐|补充|道：|说："
+    /// v3：严格说话动词。只有这些能触发「主语」捕获，修饰词不再混进来。
+    static let speechVerbs = "说|道|曰|问|答|喊|叫|笑|叹|哭|应|回|劝|禀|奏|言|吟|呼|唤|喝|骂|斥|吼|咆哮|叱|扯|嘀咕|嘟囔|嘟哝|念叨|咕哝|嚷|吩咐|补充"
+    /// v3：状语/修饰词。出现在说话动词前只能作修饰，永远不能注册为人名；同时作为负向特征。
+    static let speechModifiers: [String] = [
+        "轻声", "低声", "高声", "厉声", "冷声", "沉声", "淡声", "小声", "大声", "冷笑",
+        "大喝", "咬牙", "脱口", "抬眼", "心疼", "抬眸", "垂眸", "抬手", "低头", "抬头",
+        "转身", "起身", "皱眉", "挑眉", "咬唇", "抿唇", "点头", "摇头", "开口", "出声",
+        "接口", "应声", "轻笑", "低笑", "苦笑", "轻叹", "叹息", "呢喃", "喃喃", "低语",
+        "沉吟", "微微", "缓缓", "默默", "渐渐", "轻轻", "慢慢", "匆匆", "猛地", "顿时",
+        "瞬间", "忽然", "突然", "关切", "沙哑", "平静", "淡淡", "柔声", "急声", "连声",
+        "低沉", "大声", "低声道", "轻声道"
+    ]
+    /// v3 Stage0：统计叙述里的状语修饰词（负向特征）
+    static func modifiersIn(_ text: String) -> [String] {
+        speechModifiers.filter { text.contains($0) }
+    }
     /// 去除姓名前后称谓/敬语，得到基名。
     private let trailingTitles = ["娘子","丫鬟","少爷","老爷","夫人","王爷","相公","女侠","仙子","侠士","老爷子","公主","郡主","皇后","太后","妃","妾","妻","姊","妹","嫂","姑","婆","姨","婶","媳","女儿","姐","弟","叔","伯","舅","父","夫","兄","哥","郎","爹","爸","爷","子","婿","郎君","将军","殿下"]
     /// 描述词 → 性别（那少年 / 那女子 等）
@@ -90,12 +105,22 @@ public struct CharacterAnalyzer {
         // 用户白名单：一定是人名/称呼。清洗/准入/碎片检查全部豁免，且旁白中出现即注册。
         let whitelist = userWhitelist
 
+        // ---- v3 Stage0：特征统计（只生成候选，不注册）----
+        var subjectHits: [String: Int] = [:]      // 作为引号前「主语」出现的次数（正向核心特征）
+        var adverbHits: [String: Int] = [:]       // 出现在状语/修饰位的次数（强负向）
+        var quoteCounts: [String: Int] = [:]      // 每个角色最终拥有的台词数（Stage3 复核用）
+        var sameSpeakerStreak = 0                 // 连续同一说话人的句数（对话轮次状态机）
+        var previousSpeaker: String? = nil
+
         // ---- Pass 1：说话人候选计数（所有长度；三字及以上构成「长名」） ----
         var speakerCounts: [String: Int] = [:]
         for unit in units {
             if case .dialogue(_, let preceding) = unit {
+                // 状语词只作负向特征，永不进入说话人候选
+                for m in Self.modifiersIn(preceding) { adverbHits[m, default: 0] += 1 }
                 if let raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist), raw != "他", raw != "她" {
                     speakerCounts[raw, default: 0] += 1
+                    subjectHits[raw, default: 0] += 1
                 }
             }
         }
@@ -164,14 +189,22 @@ public struct CharacterAnalyzer {
         }
         func admitted(_ c: String?) -> Bool {
             guard let c, c != "他", c != "她" else { return false }
-            // 白名单词一定是人名，直接准入
+            // 白名单词一定是人名，直接准入（用户自定义人名保持最高优先级）
             if whitelist.contains(c) { return true }
+            // 黑名单 / 非人名词典：硬过滤（用户自定义过滤词同样在此生效）
+            if blocked.contains(c) { return false }
+            // v3：只在状语位出现、从未作过主语 → 描写词，一票否决
+            if (adverbHits[c] ?? 0) > 0, (subjectHits[c] ?? 0) == 0 { return false }
+            let subs = subjectHits[c] ?? 0
             switch c.count {
             case 2:
-                // 旁白 + 说话人 总出现 ≥2 次（垃圾已被清洗/停用词/长名占位拦截）
-                return (narrationCounts[c] ?? 0) + (speakerCounts[c] ?? 0) >= 2
+                // 正向核心：至少一次作为台词主语独立出现；否则才退回旧的频次规则
+                return subs >= 1 || ((narrationCounts[c] ?? 0) + (speakerCounts[c] ?? 0) >= 2
+                                     && (adverbHits[c] ?? 0) == 0)
             case 3:
-                return (speakerCounts[c] ?? 0) >= 2
+                // 三字名同样以「作过主语」为核心正向信号（主语位 + 词典 + 全局复核三层保护后，
+                // 不再需要旧的 2 次硬门槛，否则只出场一次的角色会被漏掉）
+                return subs >= 1 || (speakerCounts[c] ?? 0) >= 2
             default:
                 return false
             }
@@ -250,7 +283,14 @@ public struct CharacterAnalyzer {
             let want: Gender? = (p == "她") ? .female : .male
             if let last = lastDialogueSpeaker {
                 if let g = roleGender(last) {
-                    if want == nil || g == want { return last }
+                    if want == nil || g == want {
+                        // v3 Stage2：连续 3 句都是同一人时，按 A-B-A-B 轮次交替先验改指另一位活跃角色
+                        if sameSpeakerStreak >= 3,
+                           let alt = sceneRecent.last(where: { $0 != last && (want == nil || roleGender($0) == want) }) {
+                            return alt
+                        }
+                        return last
+                    }
                 } else {
                     return last
                 }
@@ -337,6 +377,10 @@ public struct CharacterAnalyzer {
                 if let id = speakerId {
                     ensureSceneRecent(id)
                     lastDialogueSpeaker = id
+                    // v3：为 Stage3 复核与轮次状态机留证据
+                    quoteCounts[id, default: 0] += 1
+                    if id == previousSpeaker { sameSpeakerStreak += 1 } else { sameSpeakerStreak = 1 }
+                    previousSpeaker = id
                 }
                 segments.append(SpeechSegment(id: "seg_\(segIndex)", text: quote, characterId: speakerId, emotion: emotion, position: segIndex))
                 segIndex += 1
@@ -352,6 +396,29 @@ public struct CharacterAnalyzer {
                 return a.count < b.count
             }
             if let best { roles[i].canonicalName = best }
+        }
+
+        // ---- v3 Stage3：全局复核（可回滚）----
+        // 旧算法「边扫边注册、单向不可逆」；这里在全书解析完成后统一淘汰：
+        //  ① 命中非人名词典 / 用户黑名单  ② 既没作过主语、也没拥有过台词
+        // 白名单词全豁免，用户自定义人名永远保留。
+        var removedIds = Set<String>()
+        for role in roles {
+            if whitelist.contains(role.canonicalName) { continue }
+            let names = Set([role.canonicalName] + role.aliases)
+            if names.contains(where: { blocked.contains($0) || Self.speechModifiers.contains($0) }) {
+                removedIds.insert(role.id)
+                continue
+            }
+            let quotes = quoteCounts[role.id] ?? 0
+            let subjects = names.reduce(0) { $0 + (subjectHits[$1] ?? 0) }
+            if quotes == 0 && subjects == 0 { removedIds.insert(role.id) }
+        }
+        if !removedIds.isEmpty {
+            roles.removeAll { removedIds.contains($0.id) }
+            for i in segments.indices where segments[i].characterId.map({ removedIds.contains($0) }) == true {
+                segments[i].characterId = nil
+            }
         }
 
         // ---- 后处理：段落停顿。旁白/台词分段可能跨多个自然段（segmentText 的缓冲区跨行累积），
@@ -449,29 +516,39 @@ public struct CharacterAnalyzer {
 
     /// 从引语前的叙述里找最近一次「X [+地/得/了] + 说话提示」，返回 X（已清洗）。
     /// 副词修饰（「眉飞色舞地道」「缓缓地说」）与量词前缀（「一张脸说」）的捕获不可靠，跳过。
+    /// 从引语前的叙述里找主语（v3）：只用严格说话动词触发，捕获串先剥掉状语修饰词。
     private func resolveSpeaker(_ preceding: String, blocked: Set<String>, whitelist: Set<String> = []) -> String? {
         let last = String(preceding.suffix(min(preceding.count, 40)))
-        let pattern = "([\\u4e00-\\u9fa5]{1,4})([地得了]?)(?:\(speechCues))"
+        let pattern = "([\\u4e00-\\u9fa5]{1,6})([地得了]?)(?:\(Self.speechVerbs))"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = last as NSString
         let range = NSRange(location: 0, length: ns.length)
         let matches = re.matches(in: last, range: range)
-        var out: String? = nil
+        let mods = Self.speechModifiers.sorted { $0.count > $1.count }
         for m in matches.reversed() {
             guard m.range(at: 2).location != NSNotFound else { continue }
-            if m.range(at: 2).length > 0 { continue }   // 副词修饰 → 不可靠
+            if m.range(at: 2).length > 0 { continue }
             let start = m.range(at: 1).location
             if start > 0, Self.measurePrev.contains(Character(ns.substring(with: NSRange(location: start - 1, length: 1)))) {
                 continue
             }
-            if let c = cleanCandidate(ns.substring(with: m.range(at: 1)), blocked: blocked, whitelist: whitelist) {
-                out = c
-                break
+            var raw = ns.substring(with: m.range(at: 1))
+            if whitelist.contains(raw) { return raw }
+            var changed = true
+            while changed, !raw.isEmpty {
+                changed = false
+                if let l = raw.last, Self.funcChars.contains(l) || Self.tailNoise.contains(l) {
+                    raw.removeLast(); changed = true; continue
+                }
+                for mod in mods where raw.hasSuffix(mod) && raw.count >= mod.count {
+                    raw = String(raw.dropLast(mod.count)); changed = true; break
+                }
             }
+            if raw == "他" || raw == "她" { return raw }
+            if let c = cleanCandidate(raw, blocked: blocked, whitelist: whitelist) { return c }
         }
-        return out
+        return nil
     }
-
     /// 扫描误报黑名单（姓氏+常用词组合、常见双字词等；数据驱动，持续补充；另支持用户自定义名单）
     static let nameStopwords: Set<String> = [
         "英雄", "神情", "突然", "但是", "可是", "然后", "已经", "因为", "所以", "现在",
@@ -495,7 +572,14 @@ public struct CharacterAnalyzer {
         "小声", "随口", "水花", "养起", "湛重", "明所", "明晃", "严拍", "皮面", "云见",
         "云眼", "云看", "云扛", "云听", "严重", "周身", "马场", "包子", "姜水", "祁往",
         "安宁", "红色", "红血", "明知", "权倾", "马步", "石壁", "石阶", "林间", "好意",
-        "好意思", "乐意", "费力", "包扎", "马车", "马鞭", "高挂"
+        "好意思", "乐意", "费力", "包扎", "马车", "马鞭", "高挂",
+        // v3：把「打地鼠黑名单」升级为系统化非人名词典（动作 / 情绪 / 状语）
+        "脱口", "抬眼", "心疼", "轻声", "低声", "高声", "厉声", "柔声", "急声", "连声",
+        "抬眸", "垂眸", "抬手", "抿唇", "轻叹", "低沉", "轻笑", "低笑", "苦笑", "冷笑",
+        "关切", "沙哑", "平静", "淡淡", "呢喃", "喃喃", "低语", "沉吟", "猛地", "顿时",
+        "瞬间", "忽然", "突然", "匆匆", "微微", "缓缓", "默默", "渐渐", "轻轻", "慢慢",
+        "点头", "摇头", "开口", "出声", "接口", "应声", "转身", "起身", "皱眉", "挑眉",
+        "咬唇", "沉声", "冷声", "淡声", "小声", "大声", "心中", "心底", "眼底", "笑意"
     ]
 
     /// 去姓名前后称谓/敬语，得到基名（林风兄→林风，老林→林）。

@@ -149,4 +149,77 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(roles.first?.gender, .male)
         XCTAssertEqual(roles.first?.aliases, ["太子", "吴七"], "别名应按顿号拆分并剥掉括号备注")
     }
+
+    // MARK: - v3 闭环解析回归
+
+    /// 状语/动作/情绪词不得被注册为角色；真人名仍要识别。
+    private let falsePositiveSample = """
+    第三章 雨夜
+
+    慕容衍脱口道：「此事不可。」
+
+    徐镜儿抬眼轻声说：「那便再等等。」
+
+    他心疼地叹了口气：「罢了。」
+
+    慕容衍笑道：「明日再说。」
+
+    徐镜儿点头：「好。」
+    """
+
+    func testDescriptiveWordsAreNotRoles() {
+        let r = CharacterAnalyzer().analyze(falsePositiveSample)
+        let names = Set(r.roles.map { $0.canonicalName })
+        print("V3_ROLES_NO_FALSE_POSITIVE: " + names.sorted().joined(separator: ","))
+        for junk in ["脱口", "抬眼", "心疼", "轻声", "点头", "叹了", "地叹", "口气"] {
+            XCTAssertFalse(names.contains(junk), "『\(junk)』是描写词，不应被识别为角色")
+        }
+        XCTAssertTrue(names.contains("慕容衍"), "真人名 慕容衍 应保留")
+        XCTAssertTrue(names.contains("徐镜儿"), "真人名 徐镜儿 应保留")
+        XCTAssertLessThanOrEqual(r.roles.count, 3, "角色数应收敛，实为 \(names)")
+    }
+
+    /// 黑名单（用户自定义过滤词）与白名单（用户自定义人名）语义保持不变。
+    func testBlackWhiteListsStillWork() {
+        let text = """
+        慕容衍脱口道：「此事不可。」
+        阿朱站在门边。
+        徐镜儿轻声说：「且慢。」
+        """
+        let blocked = CharacterAnalyzer().analyze(text, userStopwords: ["徐镜儿"])
+        XCTAssertFalse(blocked.roles.contains { $0.canonicalName == "徐镜儿" },
+                       "用户黑名单中的词永远不能被识别为角色")
+
+        let allowed = CharacterAnalyzer().analyze(text, userWhitelist: ["阿朱"])
+        XCTAssertTrue(allowed.roles.contains { $0.canonicalName == "阿朱" },
+                      "用户白名单中的词即使只出现在旁白、没有台词，也必须注册为角色")
+    }
+
+    /// Stage3 全局复核：只在旁白出现、从未作主语、从未拥有台词的候选要被淘汰。
+    func testGlobalReviewDropsZeroQuoteCandidates() {
+        let text = """
+        花方站在门外。花方转身离去。
+        慕容衍笑道：「来了。」
+        """
+        let r = CharacterAnalyzer().analyze(text)
+        let names = Set(r.roles.map { $0.canonicalName })
+        print("V3_ROLES_GLOBAL_REVIEW: " + names.sorted().joined(separator: ","))
+        XCTAssertFalse(names.contains("花方"), "零台词、零主语的旁白碎片应在全局复核中淘汰")
+        XCTAssertTrue(names.contains("慕容衍"), "有台词的角色应保留")
+    }
+
+    /// 状语剥离后，代词仍应正确回指到对应性别的角色（轮次状态机不破坏既有共指）。
+    func testPronounAfterModifierStillResolves() {
+        let text = """
+        林浩笑道：「走吧。」
+        苏婷轻声说：「等等。」
+        他叹道：「罢了。」
+        """
+        let r = CharacterAnalyzer().analyze(text)
+        XCTAssertFalse(r.roles.contains { $0.canonicalName == "轻声" })
+        let lin = r.roles.first { $0.canonicalName == "林浩" }
+        XCTAssertNotNil(lin)
+        XCTAssertTrue(lin?.aliases.contains("他") == true || r.roles.count == 2,
+                      "状语后的代词『他』应回指男性角色，而不是新建角色")
+    }
 }
