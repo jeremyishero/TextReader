@@ -51,7 +51,7 @@ final class AppSettings: ObservableObject {
         "zenyatta": "male", "fanchen-c": "male", "fanchen-unity": "",
         "aishell3": "multi",
         "abyssinvoker": "male", "zhihuilaozhe": "male",
-        "doom": "", "zh-ll": "",
+        "doom": "", "zh-ll": "", "chaowen": "",
     ] { didSet { persistPackGenders() } }
 
     init() { load() }

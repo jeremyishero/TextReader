@@ -61,8 +61,10 @@ final class OfflineTTSManager: ObservableObject {
               displayName: "Fanchen-C · 男声（候选）", gender: "男声", sizeMB: 115),
         .init(id: "fanchen-unity", repo: "csukuangfj/vits-zh-hf-fanchen-unity",
               displayName: "Fanchen-unity · 试听确认", gender: "试听确认", sizeMB: 115),
-        .init(id: "aishell3", repo: "csukuangfj/icefall-tts-aishell3-vits-low-2024-04-06",
-              displayName: "AISHELL3 · 多音色 174 人（男女都有）", gender: "多音色", sizeMB: 30),
+        .init(id: "aishell3", repo: "",
+              displayName: "AISHELL3 · 多音色 174 人（仅 zip 导入）", gender: "多音色", sizeMB: 30),
+        .init(id: "chaowen", repo: "",
+              displayName: "朝闻 · 试听确认（仅 zip 导入）", gender: "试听确认", sizeMB: 14),
         .init(id: "abyssinvoker", repo: "csukuangfj/vits-zh-hf-abyssinvoker",
               displayName: "深渊咏者 · 男声（候选）", gender: "男声", sizeMB: 115),
         .init(id: "doom", repo: "csukuangfj/vits-zh-hf-doom",
@@ -128,6 +130,10 @@ final class OfflineTTSManager: ObservableObject {
         onProgress: @escaping (Double) -> Void
     ) async -> String? {
         let fm = FileManager.default
+        // 仅支持从文件导入的包（repo 为空）：避免在 App 内误拉错误资源
+        guard !pack.repo.isEmpty else {
+            return "该语音包仅支持「从文件导入语音包(.zip)」，请用设置里的导入按钮"
+        }
 
         // 1) 文件清单：逐线路尝试
         var siblings: [[String: Any]]? = nil
@@ -240,6 +246,9 @@ final class OfflineTTSManager: ObservableObject {
         if path.hasPrefix("test_wavs") || path.hasPrefix(".git") { return false }
         if last.hasSuffix(".md") || last == ".gitattributes" { return false }
         if last.hasSuffix(".py") || last.hasSuffix(".sh") || last.hasSuffix(".tar.bz2") { return false }
+        // 训练权重/日志/可视化数据对推理无用，体积可能上 GB，必须排除
+        if last.hasSuffix(".pt") || last.hasSuffix(".pth") || last.hasSuffix(".onnx.json") { return false }
+        if path.contains("/log/") || path.contains("tensorboard") || last.hasPrefix("events.out.tfevents") { return false }
         return true
     }
 
