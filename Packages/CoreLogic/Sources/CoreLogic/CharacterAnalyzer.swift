@@ -116,15 +116,31 @@ public struct CharacterAnalyzer {
         return false
     }
 
-    /// 从「说话动词前的汉字串」里挑出最像人名的子串：最长优先，平局取最靠左。
-    /// 「陈公公笑眯眯」→「陈公公」（保住真主语）；「反倒笑了」→ nil（台词归旁白，绝不硬造角色）。
+    /// 从「说话动词前的汉字串」里挑出最像人名的子串。
+    /// v5：以姓/复姓/阿小老为锚点，仅沿「名用字」向右延伸，遇第一个非名用字即止——
+    /// 「顾琅垂眼」→「顾琅」（垂不是名用字，立即截断，绝不会把动词并进名字）；
+    /// 「陈公公笑眯眯」→「陈公公」（保住真主语）；「反倒笑了」→ nil（台词归旁白）。
     static func extractPersonName(from raw: String, whitelist: Set<String>, blocked: Set<String>) -> String? {
         let chars = Array(raw)
         guard !chars.isEmpty else { return nil }
         var best: String? = nil
         for i in 0..<chars.count {
-            let maxLen = min(4, chars.count - i)
-            if maxLen < 2 { continue }
+            let remainder = String(chars[i...])
+            var compLen = 0
+            for cs in Self.compoundSurnames where remainder.hasPrefix(cs) { compLen = cs.count; break }
+            var j = i
+            if compLen > 0 {
+                j = i + compLen
+                while j < chars.count, Self.isNameChar(chars[j]), (j - i) < compLen + 2 { j += 1 }
+            } else if Self.isNameChar(chars[i]) {
+                j = i + 1
+                while j < chars.count, Self.isNameChar(chars[j]), (j - i) < 3 { j += 1 }
+            } else {
+                continue
+            }
+            let runEnd = j
+            guard runEnd - i >= 2 else { continue }
+            let maxLen = min(4, runEnd - i)
             for len in stride(from: maxLen, through: 2, by: -1) {
                 let cand = String(chars[i..<(i + len)])
                 if Self.hasPersonNameShape(cand, whitelist: whitelist, blocked: blocked) {
@@ -134,6 +150,124 @@ public struct CharacterAnalyzer {
             }
         }
         return best
+    }
+
+    // MARK: v5 官职/称谓词表 + 名用字正向集合
+
+    /// 名用字（正向集合）：只有这些字可作为人名组成部分。
+    /// 与 v4 的「非人名用字黑名单」思路相反——改为「白名单」约束名尾，
+    /// 这样「顾琅垂眼」只会取到「顾琅」（垂不是名用字即止），不再需要穷举动词表打地鼠。
+    static let givenNameChars: Set<Character> = {
+        let s = "伟强刚勇军杰涛明超峰毅宇浩凯鹏斌波辉龙飞磊旭昊辰轩睿铭铠铮铁雄豪俊彦宏志国华德文建永昌盛邦振耀晨阳星海山岩松柏锋剑彪焱烁烽硕钦钧锐霖哲熙渊帅飒川" +
+        "婷娟秀丽燕玲芳娜静淑惠美倩雪梅兰竹菊莲茹薇雅婉馨怡悦欣彤丹琳璐瑾萱萌蕊婧韵娇萍霞月盈依曼柔诗梦琪瑶嫣晴芸菲茜露霜仪凤姗嫒霓翩舜娥姝娆妤" +
+        "安定律清秀英华国建永盛邦振耀晨阳星海山岩松柏锋剑彪哲熙渊帅书礼乐春秋冬夏东南西北金木水火土石田禾米谷鱼鸟马牛虎兔蛇猴鸡狗猪风云雷电波涛江河湖峰岭林森木草花叶根枝泉溪流原野园林城乡村路道门窗桥舟船车光明亮新旧好真善美心思想念知行言信忠孝仁义智和安乐喜福寿康宁静泰祥瑞锦绣彩虹玉珠宝珍珑珊瑚琥珀玫瑰茉莉荷蓉蕾芽苗稼穑朗乾坤银川滨朔瀚岳嵩恒岱渭洛汾淮泗沐润熙然湛澈岚霁霄汉韬略斌蔚骞翔翊骏骁昱晟旻煦昭昀晗琛璟琰璇" +
+        "琅衍念放镜儿青桐封云拙墉承平山烟景行鸾凰麒麟珠玉珍宝瑜琪瑶琳萱蕊婧韵嫣菲茜露霜仪姗嫒霓翩舜娥姝娆妤七岚澈湛" +
+        "哥姐弟妹娘爷伯叔舅父夫兄郎君子儿女"
+        return Set(s.map { $0 })
+    }()
+
+    /// 单个字是否可作为人名组成部分（姓 / 名用字 / 阿小老昵称前缀）。
+    static func isNameChar(_ c: Character) -> Bool {
+        String(c).count == 1 &&
+        (GenderLexicon.surnames.contains(String(c)) ||
+         Self.givenNameChars.contains(c) ||
+         "阿小老".contains(c))
+    }
+
+    /// 独立成词的称谓（前面不必有姓氏）：太子、御史、皇帝、公主、王爷、将军、公公、嬷嬷、大人…
+    static let bareTitles: [String] = [
+        "太子","皇子","阿哥","皇帝","圣上","陛下","王爷","郡王","贝勒","贝子","侯爷","国公",
+        "额驸","驸马","姑爷","公主","郡主","格格","福晋","贵妃","妃","皇后","太后","才人","美人",
+        "常在","答应","将军","都督","丞相","御史","尚书","侍郎","郎中","大人","翰林","知县","县令",
+        "知府","刺史","节度使","太监","公公","员外","掌柜","道长","师父","方丈","和尚","仙君","壮士",
+        "大侠","少侠","书生","少年","汉子","东家","老板","伙计","船夫","车夫","捕快","衙役","仵作",
+        "牢头","龟公","戏子","伶人","商贾","护卫","侍卫","小厮","管家","大夫","宫女","尼姑","师太",
+        "仙子","女侠","淑女","秀女","丫头","丫鬟","娘子","小姐","姑娘","夫人","妾","妻","女儿","姊",
+        "妹","嫂","姑","婆","姨","婶","媳","娘","妈","妇","女王"
+    ]
+    /// 与姓氏组合成「姓+称谓」的称谓后缀：尚书、侍郎、将军、公子、夫人、娘、爷、大人…
+    static let titleSuffixes: [String] = [
+        "尚书","侍郎","郎中","御史","将军","都督","丞相","侯爷","国公","郡王","贝勒","贝子","额驸",
+        "驸马","公公","太监","员外","掌柜","道长","师父","方丈","和尚","翰林","知县","县令","知府",
+        "刺史","节度使","东家","姑爷","老板","伙计","船夫","车夫","捕快","衙役","仵作","牢头","龟公",
+        "戏子","伶人","商贾","护卫","侍卫","小厮","管家","大夫","仙子","女侠","淑女","秀女","娘子",
+        "丫鬟","丫头","嬷嬷","宫女","尼姑","师太","公子","少爷","老爷","相公","郎君","王爷","太子",
+        "皇子","阿哥","爷","君","伯","叔","兄","哥","父","舅","丈","婿","郎","爹","爸","子","弟","夫",
+        "男","公主","郡主","格格","福晋","贵妃","妃","皇后","太后","才人","美人","常在","答应","夫人",
+        "小姐","姑娘","丫鬟","丫头","嬷嬷","宫女","尼姑","师太","仙子","女侠","淑女","秀女","娘子",
+        "姐","妹","嫂","姑","婆","姨","婶","媳","女儿","姊","娘","妈","妇","妾","妻","女","女王",
+        "大娘","大婶","大姐","大哥","大叔","大爷","殿下"
+    ]
+    /// 完整官职名（含部名，四字）：吏部尚书、礼部尚书、兵部尚书…
+    static let ministryTitles: [String] = [
+        "吏部尚书","礼部尚书","兵部尚书","户部尚书","刑部尚书","工部尚书",
+        "吏部侍郎","礼部侍郎","兵部侍郎","户部侍郎","刑部侍郎","工部侍郎",
+        "吏部郎中","礼部郎中","兵部郎中","户部郎中","刑部郎中","工部郎中"
+    ]
+    /// 称谓 → 性别（用于声音分配）。未列出的按后缀规则推导。
+    static let titleGenderMap: [String: Gender] = {
+        let male = ["太子","皇子","阿哥","皇帝","圣上","陛下","王爷","郡王","贝勒","贝子","侯爷","国公","额驸","驸马","姑爷","公子","少爷","老爷","相公","郎君","爷","君","伯","叔","兄","哥","父","舅","丈","婿","郎","爹","爸","子","弟","夫","男","将军","都督","丞相","御史","尚书","侍郎","郎中","大人","翰林","知县","县令","知府","刺史","节度使","太监","公公","员外","掌柜","道长","师父","方丈","和尚","仙君","壮士","大侠","少侠","书生","少年","汉子","东家","老板","伙计","船夫","车夫","捕快","衙役","仵作","牢头","龟公","戏子","伶人","商贾","护卫","侍卫","小厮","管家","大夫","大叔","大爷","大哥"]
+        let female = ["公主","郡主","格格","福晋","贵妃","妃","皇后","太后","才人","美人","常在","答应","夫人","小姐","姑娘","丫鬟","丫头","嬷嬷","宫女","尼姑","师太","仙子","女侠","淑女","秀女","娘子","姐","妹","嫂","姑","婆","姨","婶","媳","女儿","姊","娘","妈","妇","妾","妻","女","女王","大娘","大婶","大姐"]
+        var m: [String: Gender] = [:]
+        for k in male { m[k] = .male }
+        for k in female { m[k] = .female }
+        return m
+    }()
+
+    /// 官职/称谓形态硬门槛（与 hasPersonNameShape 并列）。
+    static func hasTitleShape(_ s: String, whitelist: Set<String>, blocked: Set<String>) -> Bool {
+        if whitelist.contains(s) { return true }
+        if blocked.contains(s) { return false }
+        if Self.bareTitles.contains(s) { return true }
+        if Self.ministryTitles.contains(s) { return true }
+        let chars = Array(s)
+        if chars.count >= 3, GenderLexicon.surnames.contains(String(chars[0])),
+           Self.titleSuffixes.contains(String(chars[1...])) { return true }
+        for cs in Self.compoundSurnames where s.hasPrefix(cs) {
+            if Self.titleSuffixes.contains(String(s.dropFirst(cs.count))) { return true }
+        }
+        return false
+    }
+
+    /// 从说话动词前的字符串里挑出官职/称谓引用：太子 / 林尚书 / 吏部尚书 …。
+    static func extractTitle(from raw: String, whitelist: Set<String>, blocked: Set<String>) -> String? {
+        if whitelist.contains(raw) { return raw }
+        // 0) 指示代词 + 称谓：「那姑娘」->「姑娘」、「那护卫」->「护卫」（避免重复建角）
+        for demo in ["那", "这"] {
+            if raw.hasPrefix(demo), raw.count > 2,
+               let inner = extractTitle(from: String(raw.dropFirst()), whitelist: whitelist, blocked: blocked) {
+                return inner
+            }
+        }
+        // 1) 完整官职名（最长优先）
+        for t in Self.ministryTitles.sorted(by: { $0.count > $1.count }) where raw.hasPrefix(t) {
+            return t
+        }
+        // 2) 姓 + 称谓后缀
+        let chars = Array(raw)
+        if chars.count >= 3, GenderLexicon.surnames.contains(String(chars[0])) {
+            for suf in Self.titleSuffixes.sorted(by: { $0.count > $1.count }) where raw.hasPrefix(String(chars[0]) + suf) {
+                return String(chars[0]) + suf
+            }
+        }
+        // 3) 复姓 + 称谓后缀
+        for cs in Self.compoundSurnames where raw.hasPrefix(cs) {
+            if Self.titleSuffixes.contains(String(raw.dropFirst(cs.count))) { return raw }
+        }
+        // 4) 独立称谓（前缀）
+        for t in Self.bareTitles.sorted(by: { $0.count > $1.count }) where raw.hasPrefix(t) {
+            return t
+        }
+        return nil
+    }
+
+    /// 官职/称谓 → 性别（命中具体词或后缀规则）。
+    static func genderForTitle(_ s: String) -> Gender? {
+        if let g = titleGenderMap[s] { return g }
+        for (k, v) in titleGenderMap where k.count >= 2 && s.hasSuffix(k) {
+            return v
+        }
+        return nil
     }
 
     /// 去除姓名前后称谓/敬语，得到基名。
@@ -253,20 +387,29 @@ public struct CharacterAnalyzer {
             if whitelist.contains(c) { return true }
             // 黑名单 / 非人名词典：硬过滤（用户自定义过滤词同样在此生效）
             if blocked.contains(c) { return false }
-            // v4：人名形态证据硬门槛。任何描写词 / 副词（笑眯眯 / 满口胡 / 反倒…）
-            // 只要没有姓氏 / 复姓 / 昵称 / 白名单证据，一律不注册；不再靠词表打地鼠。
-            guard Self.hasPersonNameShape(c, whitelist: whitelist, blocked: blocked) else { return false }
+            // v5：官职/称谓形态 或 人名形态，二选一即可越过硬门槛
+            let isTitle = Self.hasTitleShape(c, whitelist: whitelist, blocked: blocked)
+            let isName = Self.hasPersonNameShape(c, whitelist: whitelist, blocked: blocked)
+            guard isName || isTitle else { return false }
             // v3：只在状语位出现、从未作过主语 → 描写词，一票否决
             if (adverbHits[c] ?? 0) > 0, (subjectHits[c] ?? 0) == 0 { return false }
             let subs = subjectHits[c] ?? 0
+            if isTitle {
+                // 官职/称谓：至少一次作台词主语（太子/御史/礼部尚书 等低频也要能解析）
+                return subs >= 1
+            }
             switch c.count {
             case 2:
-                // 正向核心：至少一次作为台词主语独立出现；否则才退回旧的频次规则
-                return subs >= 1 || ((narrationCounts[c] ?? 0) + (speakerCounts[c] ?? 0) >= 2
-                                     && (adverbHits[c] ?? 0) == 0)
+                // 二字名须至少两次作台词主语，纯旁白频次或一次性碎片（简单、红红、尚书…）不再准入
+                return subs >= 2
             case 3:
-                // 三字名同样以「作过主语」为核心正向信号（主语位 + 词典 + 全局复核三层保护后，
-                // 不再需要旧的 2 次硬门槛，否则只出场一次的角色会被漏掉）
+                // 三字名：若其前二字本身就是一个高频人名（如「阮念谢」是「阮念」+「谢(动词/姓)」），
+                // 则判为「真名+状语尾字」碎片予以剔除；真三字名（慕容衍/屈封云…）前缀远不如全名高频，保留。
+                let p2 = String(c.prefix(2))
+                if (Self.hasPersonNameShape(p2, whitelist: whitelist, blocked: blocked) || subjectHits[p2] != nil),
+                   (totalCounts[p2] ?? 0) >= max(2, (totalCounts[c] ?? 0) * 2) {
+                    return false
+                }
                 return subs >= 1 || (speakerCounts[c] ?? 0) >= 2
             default:
                 return false
@@ -274,6 +417,7 @@ public struct CharacterAnalyzer {
         }
         func isFragment(_ c: String) -> Bool {
             if whitelist.contains(c) { return false }
+            if Self.hasTitleShape(c, whitelist: whitelist, blocked: blocked) { return false }
             for l in longNames where l.count > c.count && l.contains(c) {
                 if (totalCounts[c] ?? 0) < (totalCounts[l] ?? 0) { return true }
             }
@@ -599,6 +743,8 @@ public struct CharacterAnalyzer {
         }
         var raw = ns.substring(with: m.range(at: 1))
         if whitelist.contains(raw) { return raw }
+        // v5：先尝试官职/称谓（太子 / 林尚书 / 吏部尚书 …），命中即返回
+        if let t = Self.extractTitle(from: raw, whitelist: whitelist, blocked: blocked) { return t }
         let mods = Self.speechModifiers.sorted { $0.count > $1.count }
         var changed = true
         while changed, !raw.isEmpty {
@@ -611,6 +757,7 @@ public struct CharacterAnalyzer {
             }
         }
         if raw == "他" || raw == "她" { return raw }
+        if let t = Self.extractTitle(from: raw, whitelist: whitelist, blocked: blocked) { return t }
         return Self.extractPersonName(from: raw, whitelist: whitelist, blocked: blocked)
     }
     /// 扫描误报黑名单（姓氏+常用词组合、常见双字词等；数据驱动，持续补充；另支持用户自定义名单）
@@ -669,15 +816,16 @@ public struct CharacterAnalyzer {
     // MARK: 性别（多角度投票）
 
     /// 综合判定一个表面形式的性别：称谓 + 关系词 + 名字用字 + 代词。
-    private func genderFor(_ surface: String) -> Gender {
-        var score = GenderScore()
-        if let g = GenderLexicon.titleGender(surface) { score.add(g, weight: 2) }
-        if let g = GenderLexicon.relationGender(surface) { score.add(g, weight: 2) }
-        let nameScore = GenderLexicon.score(for: surface)
-        score.male += nameScore.male
-        score.female += nameScore.female
-        if surface == "她" { score.add(.female, weight: 1) }
-        if surface == "他" { score.add(.male, weight: 1) }
-        return score.result(threshold: 0)
-    }
+        private func genderFor(_ surface: String) -> Gender {
+            var score = GenderScore()
+            if let g = Self.genderForTitle(surface) { score.add(g, weight: 3) }
+            if let g = GenderLexicon.titleGender(surface) { score.add(g, weight: 2) }
+            if let g = GenderLexicon.relationGender(surface) { score.add(g, weight: 2) }
+            let nameScore = GenderLexicon.score(for: surface)
+            score.male += nameScore.male
+            score.female += nameScore.female
+            if surface == "她" { score.add(.female, weight: 1) }
+            if surface == "他" { score.add(.male, weight: 1) }
+            return score.result(threshold: 0)
+        }
 }

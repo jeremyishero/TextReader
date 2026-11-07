@@ -273,6 +273,40 @@ final class CoreLogicTests: XCTestCase {
                       "白名单词即使长得像描写词，也必须按用户指定注册为角色")
     }
 
+    // MARK: - v5 官职/称谓解析
+
+    /// 用户要求：太子、林尚书、周尚书、御史、吏部尚书、礼部尚书 等官职/称谓也要能被解析为说话人。
+    private let titleSample = """
+    第一章 朝堂
+
+    太子沉吟道：「此事容后再议。」
+
+    林尚书笑道：「臣附议。」
+
+    周尚书皱眉道：「不可。」
+
+    御史奏道：「臣有本奏。」
+
+    吏部尚书朗声道：「准。」
+
+    礼部尚书低声道：「亦准。」
+    """
+
+    func testOfficialTitlesAreParsed() {
+        let r = CharacterAnalyzer().analyze(titleSample)
+        let names = Set(r.roles.map { $0.canonicalName })
+        print("V5_TITLES: " + names.sorted().joined(separator: ","))
+        for t in ["太子", "林尚书", "周尚书", "御史", "吏部尚书", "礼部尚书"] {
+            XCTAssertTrue(names.contains(t), "官职/称谓『\(t)』应被解析为角色")
+        }
+        let tai = r.roles.first { $0.canonicalName == "太子" }
+        XCTAssertEqual(tai?.gender, .male, "太子应为男")
+        let li = r.roles.first { $0.canonicalName == "林尚书" }
+        XCTAssertEqual(li?.gender, .male, "林尚书应为男")
+        let libu = r.roles.first { $0.canonicalName == "吏部尚书" }
+        XCTAssertEqual(libu?.gender, .male, "吏部尚书应为男")
+    }
+
     // MARK: - 角色表导出 Excel
 
     func testXlsxRoleExportRoundTrip() throws {

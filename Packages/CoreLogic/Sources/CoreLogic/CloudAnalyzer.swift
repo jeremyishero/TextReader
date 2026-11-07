@@ -52,6 +52,7 @@ public struct CloudAnalyzer {
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
+        req.timeoutInterval = 60          // 空闲超时：防止云端长时间无响应导致界面一直等待
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
