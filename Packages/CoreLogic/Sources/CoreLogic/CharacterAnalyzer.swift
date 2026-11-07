@@ -519,7 +519,7 @@ public struct CharacterAnalyzer {
     /// 从引语前的叙述里找主语（v3）：只用严格说话动词触发，捕获串先剥掉状语修饰词。
     private func resolveSpeaker(_ preceding: String, blocked: Set<String>, whitelist: Set<String> = []) -> String? {
         let last = String(preceding.suffix(min(preceding.count, 40)))
-        let pattern = "([\\u4e00-\\u9fa5]{1,6})([地得了]?)(?:\(Self.speechVerbs))"
+        let pattern = "([\\u4e00-\\u9fa5]{1,10})([地得了]?)(?:\(Self.speechVerbs))"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = last as NSString
         let range = NSRange(location: 0, length: ns.length)
@@ -545,6 +545,8 @@ public struct CharacterAnalyzer {
                 }
             }
             if raw == "他" || raw == "她" { return raw }
+            // 窗口放宽后可能带进句首成分；人名总在动词前的最末端，取末尾 3 字
+            if raw.count > 3 { raw = String(raw.suffix(3)) }
             if let c = cleanCandidate(raw, blocked: blocked, whitelist: whitelist) { return c }
         }
         return nil
