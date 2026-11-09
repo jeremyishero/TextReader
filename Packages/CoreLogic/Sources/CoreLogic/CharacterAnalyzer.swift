@@ -318,7 +318,7 @@ public struct CharacterAnalyzer {
                 }
             }
         }
-        let longNames = speakerCounts.filter { $0.value >= 2 && $0.key.count >= 3 }.map(\.key)
+        let longNames = speakerCounts.filter { $0.value >= 1 && $0.key.count >= 3 }.map(\.key)
 
         // ---- 旁白二字候选扫描（长名占位排除后） ----
         func scanNarration(_ body: String) -> [String] {
