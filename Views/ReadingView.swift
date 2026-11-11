@@ -167,7 +167,7 @@ struct ReadingView: View {
             configurePlayer()
             player.activeTitle = item.name
             player.openTOCHandler = { showTOC = true }
-            player.startPlaybackHandler = { [weak self] idx in self?.startPlayback(from: idx) }
+            player.startPlaybackHandler = { idx in self.startPlayback(from: idx) }
         }
         .onChange(of: scenePhase) { phase in
             // 从后台/锁屏回到前台时，立即把高亮同步到当前朗读位置
