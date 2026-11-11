@@ -9,11 +9,14 @@ struct TextReaderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            DocumentListView()
-                .environmentObject(store)
-                .environmentObject(player)
-                .environmentObject(settings)
-                .task { configureAudioSession() }
+            VStack(spacing: 0) {
+                DocumentListView()
+                    .task { configureAudioSession() }
+                PlayerBar()
+            }
+            .environmentObject(store)
+            .environmentObject(player)
+            .environmentObject(settings)
         }
     }
 

@@ -14,7 +14,6 @@ struct ReadingView: View {
     @State private var analysisSource: String?          // "cloud" / "local"
     @State private var isAnalyzing = false
     @State private var showAnalysis = false
-    @State private var useAnalyzed = false
     @State private var pendingStart: Int? = nil   // 断点续读起始段
     @State private var lastSaveAt = Date.distantPast
     @State private var analysisErrorMessage: String?
@@ -30,7 +29,6 @@ struct ReadingView: View {
     @State private var docWhitelist: [String] = []      // 每文档人名白名单
     @State private var docRules: [CustomRule] = []      // 每文档自定义朗读规则（≤20 条）
     @State private var showTOC = false                  // 章节目录
-    @State private var restartToken = 0                 // 目录 ▶︎ 递增 → PlayerBar 立即从新起点重播
     @State private var chapterList: [(index: Int, title: String)] = []   // (段落索引, 章节标题)
 
     var body: some View {
@@ -38,11 +36,9 @@ struct ReadingView: View {
             if let p = item.progress {
                 BannerView(text: "上次读到第 \(p.segmentIndex + 1) 段") {
                     pendingStart = p.segmentIndex
+                    player.requestStartPlayback(from: p.segmentIndex)
                 }
             }
-            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides, onOpenTOC: {
-                showTOC = true
-            }, restartToken: restartToken)
             if paragraphs.isEmpty {
                 ScrollView {
                     Text("（未能提取到文本，可能是扫描版 PDF 或空文件）")
@@ -166,7 +162,12 @@ struct ReadingView: View {
             Text("云端解析未配置或失败时，将自动回退本地解析并提示原因。")
         }
         .task { loadText() }
-        .onAppear { configurePlayer() }
+        .onAppear {
+            configurePlayer()
+            player.activeTitle = item.name
+            player.openTOCHandler = { showTOC = true }
+            player.startPlaybackHandler = { [weak self] idx in self?.startPlayback(from: idx) }
+        }
         .onChange(of: scenePhase) { phase in
             // 从后台/锁屏回到前台时，立即把高亮同步到当前朗读位置
             if phase == .active { syncHighlightNow() }
@@ -175,6 +176,8 @@ struct ReadingView: View {
             saveProgressNow()
             player.onIndexChange = nil
             player.onCloudFallback = nil
+            player.startPlaybackHandler = nil
+            player.openTOCHandler = nil
         }
     }
 
@@ -229,7 +232,7 @@ struct ReadingView: View {
         if let cached = store.loadAnalysis(for: item.id) {
             analysis = cached.result
             analysisSource = cached.source
-            useAnalyzed = true
+            player.useAnalyzedPlayback = true
         }
         // 恢复每文档的声音配置与黑白名单
         voiceOverrides = store.loadVoiceConfig(for: item.id)
@@ -291,7 +294,7 @@ struct ReadingView: View {
                             showTOC = false
                             if let seg = nearestSegmentIndex(forParagraph: ch.index) {
                                 pendingStart = seg
-                                restartToken += 1   // 触发 PlayerBar 立即停止当前播放并从新起点开始
+                                player.requestStartPlayback(from: seg)   // 立即从本章起点开始朗读
                                 showToast("正在从「\(ch.title)」开始朗读")
                             }
                         } label: {
@@ -324,7 +327,7 @@ struct ReadingView: View {
     private func nearestSegmentIndex(forParagraph target: Int) -> Int? {
         guard !text.isEmpty else { return nil }
         let chunks: [String]
-        if useAnalyzed, let a = analysis, !a.segments.isEmpty {
+        if player.useAnalyzedPlayback, let a = analysis, !a.segments.isEmpty {
             chunks = a.segments.map { $0.text }
         } else {
             chunks = TextChunker().chunk(text)
@@ -446,7 +449,74 @@ struct ReadingView: View {
     private func saveProgressNow() {
         let idx = player.currentSegmentIndex
         guard idx >= 0 else { return }
-        store.updateProgress(documentId: item.id, segmentIndex: idx, analyzed: useAnalyzed)
+        store.updateProgress(documentId: item.id, segmentIndex: idx, analyzed: player.useAnalyzedPlayback)
+    }
+
+    // MARK: 播放（全局播放条 / 锁屏控件共用）
+
+    /// 组装声音并从指定段索引开始朗读（全局播放条的「播放/继续」、锁屏控件、目录 ▶︎ 从本章朗读 共用）。
+    private func startPlayback(from index: Int? = nil) {
+        player.rate = settings.defaultRate
+        player.autoVoiceSwitch = settings.autoVoiceSwitch
+
+        let defaultVoice = resolveVoice(settings.defaultVoiceIdentifier)
+            ?? TTSPlayer.pickVoice(preferGender: .neutral)
+        player.setDefaultVoice(defaultVoice)
+        player.setLanguageVoices(languageVoices(defaultVoice: defaultVoice))
+
+        let start = index ?? pendingStart ?? 0
+        let cloud = cloudEnabled
+
+        if player.useAnalyzedPlayback, let a = analysis, !a.segments.isEmpty {
+            // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
+            let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)
+            var map: [String: AVSpeechSynthesisVoice] = [:]
+            var pitches: [String: Float] = [:]
+            for role in a.roles {
+                if let identifier = voiceOverrides[role.canonicalName],
+                   let v = AVSpeechSynthesisVoice(identifier: identifier) {
+                    map[role.id] = v
+                    pitches[role.id] = 1.0   // 手动指定声音后不叠加性别音高补偿
+                } else {
+                    map[role.id] = assign.voices[role.id]
+                    pitches[role.id] = assign.pitches[role.id] ?? 1.0
+                }
+            }
+            var genders: [String: Gender] = [:]
+            for role in a.roles { genders[role.id] = role.gender }
+            player.setRoleGenders(genders)
+            player.setRoleVoices(map)
+            player.setRolePitches(pitches)
+            player.playSegments(a.segments, startIndex: start, cloud: cloud)
+        } else {
+            guard !text.isEmpty else { return }
+            let chunks = TextChunker().chunk(text)
+            player.playPlain(chunks, startIndex: start, cloud: cloud)
+        }
+        pendingStart = nil   // 起点只生效一次
+    }
+
+    private func resolveVoice(_ identifier: String?) -> AVSpeechSynthesisVoice? {
+        identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+    }
+
+    /// 简体/繁体/英文三语声音映射（v1 由用户在设置页手动选声）
+    private func languageVoices(defaultVoice: AVSpeechSynthesisVoice?) -> [ScriptLanguage: AVSpeechSynthesisVoice] {
+        var map: [ScriptLanguage: AVSpeechSynthesisVoice] = [:]
+        if let v = resolveVoice(settings.voiceZhHans) ?? defaultVoice ?? TTSPlayer.pickVoice(language: "zh-CN") {
+            map[.zhHans] = v
+        }
+        if let v = resolveVoice(settings.voiceZhHant) ?? TTSPlayer.pickVoice(language: "zh-TW") {
+            map[.zhHant] = v
+        }
+        if let v = resolveVoice(settings.voiceEn) ?? TTSPlayer.pickVoice(language: "en-US") {
+            map[.english] = v
+        }
+        return map
+    }
+
+    private var cloudEnabled: Bool {
+        settings.cloudTTSEnabled && !settings.cloudTTSApiKey.isEmpty
     }
 
     // MARK: 轻提示
@@ -510,7 +580,7 @@ struct ReadingView: View {
             }
             analysis = res
             analysisSource = (useCloud && !cloudFailed) ? "cloud" : "local"
-            useAnalyzed = true
+            player.useAnalyzedPlayback = true
             isAnalyzing = false
             // 解析结果按文档持久化：重进/重启后结果与圆灯颜色不丢失
             store.saveAnalysis(res, source: analysisSource ?? "local", for: item.id)

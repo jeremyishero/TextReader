@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreLogic
+import MediaPlayer
 
 /// 声音预听器：独立于播放器的合成器实例，用于「选定前先试听这个声音」。
 /// 全局共享单例，避免与朗读播放互相打断。
@@ -107,11 +108,28 @@ final class TTSPlayer: NSObject, ObservableObject {
         return out
     }
 
+    // 全局播放条共享状态（App 各界面共用同一个 player 实例）
+    @Published var useAnalyzedPlayback: Bool = false   // 角色分声开关（阅读页与全局播放条共享）
+    @Published var activeTitle: String? = nil           // 当前正在朗读的文档标题（播放条显示）
+    /// 由 ReadingView 注入：从指定段索引开始朗读（nil = 从头）；全局播放条在尚无内容时调用它
+    var startPlaybackHandler: ((Int?) -> Void)?
+    /// 由 ReadingView 注入：打开章节目录
+    var openTOCHandler: (() -> Void)?
+
+    /// 是否已装载可播放内容（全局播放条据此显示 播放 / 继续 / 无内容）
+    var isLoaded: Bool { !segments.isEmpty || !plainChunks.isEmpty }
+
+    /// 全局播放条 / 锁屏控件请求开始朗读
+    func requestStartPlayback(from index: Int? = nil) {
+        startPlaybackHandler?(index)
+    }
+
     private enum PlayMode { case plain, segments }
 
     override init() {
         super.init()
         synth.delegate = self
+        setupRemoteCommands()
     }
 
     // MARK: 声音配置
@@ -213,6 +231,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         self.mode = .segments
         currentIndex = max(0, min(startIndex, segments.count - 1))
         isPlaying = true
+        updateNowPlaying()
         speakCurrent()
     }
 
@@ -221,6 +240,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         self.mode = .plain
         currentIndex = max(0, min(startIndex, chunks.count - 1))
         isPlaying = true
+        updateNowPlaying()
         speakCurrent()
     }
 
@@ -228,12 +248,14 @@ final class TTSPlayer: NSObject, ObservableObject {
         audioPlayer?.pause()
         synth.pauseSpeaking(at: .word)
         isPlaying = false
+        updateNowPlaying()
     }
 
     func resume() {
         audioPlayer?.play()
         synth.continueSpeaking()
         isPlaying = true
+        updateNowPlaying()
     }
 
     /// 快退/快进（秒）。离线/云端音频路径精确按时间跳转；系统 TTS 没有时间轴，按「段」近似。
@@ -242,6 +264,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     func seek(by seconds: TimeInterval) {
         if let ap = audioPlayer, ap.duration > 0 {
             ap.currentTime = min(max(ap.currentTime + seconds, 0), ap.duration)
+            updateNowPlaying()
             return
         }
         guard isPlaying else { return }
@@ -256,6 +279,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         currentIndex = target
         isPlaying = true
         speakCurrent()
+        updateNowPlaying()
     }
 
     func stop() {
@@ -267,12 +291,72 @@ final class TTSPlayer: NSObject, ObservableObject {
         currentSegmentIndex = -1
         nowSpeakingText = nil
         speakingRawText = nil
+        updateNowPlaying()
     }
 
     private func finish() {
         isPlaying = false
         currentSegmentIndex = -1
         nowSpeakingText = nil
+    }
+
+    // MARK: 锁屏 / 后台（最小化）媒体控制
+
+    /// 注册锁屏 / 控制中心 / 灵动岛的媒体控制：最小化 App 后仍显示「正在播放」小窗并可控制。
+    private func setupRemoteCommands() {
+        let rc = MPRemoteCommandCenter.shared()
+        rc.playCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.remoteResume() }
+            return .success
+        }
+        rc.pauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.pause() }
+            return .success
+        }
+        rc.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.remoteToggle() }
+            return .success
+        }
+        rc.skipBackwardCommand.preferredIntervals = [5]
+        rc.skipBackwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.seek(by: -5) }
+            return .success
+        }
+        rc.skipForwardCommand.preferredIntervals = [5]
+        rc.skipForwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.seek(by: 5) }
+            return .success
+        }
+        rc.previousTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.seek(by: -5) }
+            return .success
+        }
+        rc.nextTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.seek(by: 5) }
+            return .success
+        }
+    }
+
+    private func remoteResume() {
+        if isLoaded { resume() } else { requestStartPlayback() }
+    }
+    private func remoteToggle() {
+        if isPlaying { pause() }
+        else if isLoaded { resume() }
+        else { requestStartPlayback() }
+    }
+
+    /// 刷新锁屏「正在播放」信息（标题 + 进度 + 速率）。
+    private func updateNowPlaying() {
+        var info: [String: Any] = [:]
+        info[MPMediaItemPropertyTitle] = activeTitle ?? "朗读"
+        info[MPMediaItemPropertyArtist] = "TextReader"
+        if let ap = audioPlayer, ap.duration > 0 {
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = ap.currentTime
+            info[MPMediaItemPropertyPlaybackDuration] = ap.duration
+        }
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     private func currentText() -> String? {

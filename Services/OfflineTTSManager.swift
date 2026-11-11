@@ -426,7 +426,69 @@ final class OfflineTTSManager: ObservableObject {
             }
         }
         SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio)
-        return ok ? buffer : nil
+        guard ok else { return nil }
+        return Self.normalizeWAV(buffer)
+    }
+
+    /// 将 VITS 生成的 WAV 做响度归一化（RMS 对齐到目标值，且峰值不超过上限），
+    /// 解决不同句子响度不一致导致的「声音时大时小」问题（尤其单音色 / 长者类离线包）。
+    /// 仅处理 16-bit PCM 的 WAV；其它格式原样返回。
+    private static func normalizeWAV(_ data: Data) -> Data {
+        guard data.count > 44,
+              data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,   // RIFF
+              data[8] == 0x57, data[9] == 0x41, data[10] == 0x56, data[11] == 0x45  // WAVE
+        else { return data }
+        let audioFormat = Int(data[20]) | (Int(data[21]) << 8)
+        let bits = Int(data[34]) | (Int(data[35]) << 8)
+        guard audioFormat == 1, bits == 16 else { return data }
+
+        // 找到 data chunk 的偏移与长度（兼容 fmt 之后可能存在的扩展字段 / 额外块）
+        var offset = 12
+        var dataOffset = -1, dataSize = 0
+        while offset + 8 <= data.count {
+            let ck = String(data: data[offset..<offset + 4], encoding: .ascii) ?? ""
+            let sz = Int(data[offset + 4]) | (Int(data[offset + 5]) << 8)
+                      | (Int(data[offset + 6]) << 16) | (Int(data[offset + 7]) << 24)
+            if ck == "data" { dataOffset = offset + 8; dataSize = sz; break }
+            offset += 8 + sz + (sz & 1)   // 块按偶数字节对齐
+        }
+        guard dataOffset > 0, dataSize > 0, dataOffset + dataSize <= data.count else { return data }
+        let sampleCount = dataSize / 2
+        guard sampleCount > 0 else { return data }
+
+        let slice = data.subdata(in: dataOffset..<dataOffset + dataSize)
+        let samples = slice.withUnsafeBytes { raw in
+            Array(raw.bindMemory(to: Int16.self))
+        }
+
+        var sumSq = 0.0, peak: Double = 0
+        for s in samples {
+            let v = Double(s)
+            sumSq += v * v
+            let a = abs(v)
+            if a > peak { peak = a }
+        }
+        let rms = sqrt(sumSq / Double(sampleCount))
+        let fullScale = Double(Int16.max)
+        guard rms > 0, peak > 0 else { return data }
+
+        // 目标 RMS ≈ -16 dBFS（朗读舒适响度）；若缩放后峰值超过 0.98 满幅则按峰值限幅，避免削波
+        let targetRMS: Double = 0.16
+        let maxPeak: Double = 0.98
+        var scale = targetRMS / rms
+        if peak * scale > maxPeak * fullScale {
+            scale = (maxPeak * fullScale) / peak
+        }
+        guard scale.isFinite, scale > 0 else { return data }
+
+        let out = samples.map { s -> Int16 in
+            let v = Double(s) * scale
+            return Int16(max(Double(Int16.min), min(Double(Int16.max), v)))
+        }
+        var result = data
+        let newData = out.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
+        result.replaceSubrange(dataOffset..<dataOffset + dataSize, with: newData)
+        return result
     }
 
     /// 从包目录探测文件布局（兼容 piper / hf-theresa / icefall-aishell3 等不同结构）并加载引擎。
