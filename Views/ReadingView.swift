@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLogic
+import AVFoundation
 
 struct ReadingView: View {
     @EnvironmentObject var store: DocumentStore
