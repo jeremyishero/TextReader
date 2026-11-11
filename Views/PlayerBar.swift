@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 import CoreLogic
 
-/// 底部播放控制条：播放/暂停/停止、语速、是否启用角色分声、断点续读。
+/// 顶部播放控制条：回退 5 秒 / 播放·停止 / 前进 5 秒 / 语速（±0.5，点数值回 1.0×）/ 角色分声 / 目录。
 struct PlayerBar: View {
     @EnvironmentObject var player: TTSPlayer
     @EnvironmentObject var settings: AppSettings
@@ -16,46 +16,83 @@ struct PlayerBar: View {
     var restartToken: Int = 0                    // 外部（目录 ▶︎）递增时：立即从新起点重新开始播放
 
     var body: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 16) {
-                Button(action: togglePlay) {
-                    Label(player.isPlaying ? "暂停" : "播放",
-                          systemImage: player.isPlaying ? "pause.fill" : "play.fill")
+        VStack(spacing: 6) {
+            HStack(spacing: 14) {
+                Button(action: { player.seek(by: -5) }) {
+                    Image(systemName: "gobackward.5")
+                }
+                .help("回退 5 秒")
+                .buttonStyle(.bordered)
+
+                Button(action: toggleMainPlay) {
+                    Label(player.isPlaying ? "停止" : "播放",
+                          systemImage: player.isPlaying ? "stop.fill" : "play.fill")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
 
-                Button(action: { player.stop() }) {
-                    Label("停止", systemImage: "stop.fill")
+                Button(action: { player.seek(by: 5) }) {
+                    Image(systemName: "goforward.5")
                 }
+                .help("前进 5 秒")
                 .buttonStyle(.bordered)
 
-                Button {
-                    onOpenTOC?()
-                } label: {
-                    Label("目录", systemImage: "list.bullet")
+                speedControl
+
+                Spacer()
+
+                if analysis != nil {
+                    Toggle("分声", isOn: $useAnalyzed)
+                        .toggleStyle(.button)
+                        .controlSize(.small)
+                }
+                Button(action: { onOpenTOC?() }) {
+                    Image(systemName: "list.bullet")
                 }
                 .buttonStyle(.bordered)
             }
-
-            HStack {
-                Text("语速")
-                Slider(value: $player.rate, in: 0.5...3.0, step: 0.05)
-                Text(String(format: "%.2f×", player.rate))
-                    .frame(width: 52, alignment: .trailing)
-                    .font(.caption.monospacedDigit())
-            }
-
-            if analysis != nil {
-                Toggle("角色分声朗读（按人物/情绪）", isOn: $useAnalyzed)
-            }
+            .padding(.horizontal)
         }
-        .padding()
+        .padding(.vertical, 8)
         .background(.thinMaterial)
         .onChange(of: restartToken) { _ in
             // 目录 ▶︎：正在播放则先停，再立即从新起点重新开始
             guard restartToken > 0 else { return }
             if player.isPlaying { player.stop() }
+            startPlayback()
+        }
+    }
+
+    // MARK: 速度控制（精度 0.5，点击数值一键回到 1.0×）
+
+    private var speedControl: some View {
+        HStack(spacing: 4) {
+            Button { adjustRate(-0.5) } label: { Image(systemName: "minus.circle") }
+                .buttonStyle(.borderless)
+                .help("语速 -0.5")
+            Button { player.rate = 1.0 } label: {
+                Text(String(format: "%.1f×", player.rate))
+                    .frame(minWidth: 44, alignment: .center)
+            }
+            .buttonStyle(.borderless)
+            .font(.callout.monospacedDigit())
+            .help("点击回到 1.0×")
+            Button { adjustRate(0.5) } label: { Image(systemName: "plus.circle") }
+                .buttonStyle(.borderless)
+                .help("语速 +0.5")
+        }
+    }
+
+    private func adjustRate(_ delta: Float) {
+        player.rate = min(max(player.rate + delta, 0.5), 3.0)
+    }
+
+    // MARK: 主播放按钮：点击播放；播放中点击停止
+
+    private func toggleMainPlay() {
+        if player.isPlaying {
+            player.stop()
+        } else {
             startPlayback()
         }
     }
@@ -87,15 +124,7 @@ struct PlayerBar: View {
 
     // MARK: 播放
 
-    private func togglePlay() {
-        if player.isPlaying {
-            player.pause()
-            return
-        }
-        startPlayback()
-    }
-
-    /// 组装声音并从起点开始播放（togglePlay 与「目录 ▶︎ 从本章朗读」共用）。
+    /// 组装声音并从起点开始播放（顶部播放条的「播放」与「目录 ▶︎ 从本章朗读」共用）。
     private func startPlayback() {
         player.rate = settings.defaultRate
         player.autoVoiceSwitch = settings.autoVoiceSwitch

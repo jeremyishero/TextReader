@@ -131,10 +131,10 @@ public struct CharacterAnalyzer {
             var j = i
             if compLen > 0 {
                 j = i + compLen
-                while j < chars.count, Self.isNameChar(chars[j]), (j - i) < compLen + 2 { j += 1 }
+                while j < chars.count, Self.isGivenNameChar(chars[j]), (j - i) < compLen + 2 { j += 1 }
             } else if Self.isNameChar(chars[i]) {
                 j = i + 1
-                while j < chars.count, Self.isNameChar(chars[j]), (j - i) < 3 { j += 1 }
+                while j < chars.count, Self.isGivenNameChar(chars[j]), (j - i) < 3 { j += 1 }
             } else {
                 continue
             }
@@ -162,7 +162,8 @@ public struct CharacterAnalyzer {
         "婷娟秀丽燕玲芳娜静淑惠美倩雪梅兰竹菊莲茹薇雅婉馨怡悦欣彤丹琳璐瑾萱萌蕊婧韵娇萍霞月盈依曼柔诗梦琪瑶嫣晴芸菲茜露霜仪凤姗嫒霓翩舜娥姝娆妤" +
         "安定律清秀英华国建永盛邦振耀晨阳星海山岩松柏锋剑彪哲熙渊帅书礼乐春秋冬夏东南西北金木水火土石田禾米谷鱼鸟马牛虎兔蛇猴鸡狗猪风云雷电波涛江河湖峰岭林森木草花叶根枝泉溪流原野园林城乡村路道门窗桥舟船车光明亮新旧好真善美心思想念知行言信忠孝仁义智和安乐喜福寿康宁静泰祥瑞锦绣彩虹玉珠宝珍珑珊瑚琥珀玫瑰茉莉荷蓉蕾芽苗稼穑朗乾坤银川滨朔瀚岳嵩恒岱渭洛汾淮泗沐润熙然湛澈岚霁霄汉韬略斌蔚骞翔翊骏骁昱晟旻煦昭昀晗琛璟琰璇" +
         "琅衍念放镜儿青桐封云拙墉承平山烟景行鸾凰麒麟珠玉珍宝瑜琪瑶琳萱蕊婧韵嫣菲茜露霜仪姗嫒霓翩舜娥姝娆妤七岚澈湛" +
-        "哥姐弟妹娘爷伯叔舅父夫兄郎君子儿女"
+        "哥姐弟妹娘爷伯叔舅父夫兄郎君子儿女" +
+        "二三四五六七八九十百千"   // 数字名（张三/李四/王五/赵六…），避免 吴六 之类被截断
         return Set(s.map { $0 })
     }()
 
@@ -171,6 +172,15 @@ public struct CharacterAnalyzer {
         String(c).count == 1 &&
         (GenderLexicon.surnames.contains(String(c)) ||
          Self.givenNameChars.contains(c) ||
+         "阿小老".contains(c))
+    }
+
+    /// 仅「真正名用字」（不含姓氏）。提取人名时向右延伸段只认它，
+    /// 否则「委委屈屈」会被截成「屈屈」、「简简单单」会被截成「简单」这类描写词当成人名。
+    /// （姓氏可作为锚点首字，但延伸段必须是 given 字，不能继续吃姓氏。）
+    static func isGivenNameChar(_ c: Character) -> Bool {
+        String(c).count == 1 &&
+        (Self.givenNameChars.contains(c) ||
          "阿小老".contains(c))
     }
 
@@ -353,7 +363,9 @@ public struct CharacterAnalyzer {
                     let second = chars[i + 1]
                     let cand = String([chars[i], second])
                     let prevOk = (i == 0) || !Self.measurePrev.contains(chars[i - 1])
-                    if Self.isHan(second), chars[i] != second, prevOk,
+                    // V6：旁白二字候选第二字也必须是「名用字」，否则「羊腿/马肉/花生/毛掸」等
+                    // 姓氏+名词 组合会误识别为角色。真实人名（顾琅/林浩/苏婷…）第二字均在名用字集合中。
+                    if Self.isHan(second), Self.isNameChar(second), chars[i] != second, prevOk,
                        !blocked.contains(cand), !out.contains(cand) {
                         out.append(cand)
                     }
@@ -400,10 +412,11 @@ public struct CharacterAnalyzer {
             }
             switch c.count {
             case 2:
-                // 二字名核心正向信号：至少一次作为台词主语（真实人名必说话；羊腿/马肉 纯旁白且
-                // hasPersonNameShape 的形态门槛已排除它们，无需抬到 >=2）。恢复 v4 同源规则，
-                // 保证只作一次主语的真实两字名（林浩/苏婷/顾琅）也能被识别，连带代词/别名合并正常。
-                return subs >= 1 || ((narrationCounts[c] ?? 0) + (speakerCounts[c] ?? 0) >= 2 && (adverbHits[c] ?? 0) == 0)
+                // V6：二字名必须是「真正说话的人」——至少一次作为台词主语（subs>=1）。
+                // 取消 V5 的「旁白出现≥2次即可准入」兜底，否则 羊腿/马肉/花生/毛掸/石桌/房顶 等
+                // 纯旁白名词（烤羊腿/马肉/花生/毛掸子/石桌/房顶）会被误识别为角色。
+                // 真实两字名（林浩/苏婷/顾琅/魏青桐…）全书必有「X说/道」台词，subs>=1 成立。
+                return subs >= 1
             case 3:
                 // 三字名：若其前二字本身就是一个高频人名（如「阮念谢」是「阮念」+「谢(动词/姓)」），
                 // 则判为「真名+状语尾字」碎片予以剔除；真三字名（慕容衍/屈封云…）前缀远不如全名高频，保留。

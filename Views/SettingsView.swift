@@ -25,14 +25,40 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("默认语速") {
-                    Slider(value: $settings.defaultRate, in: 0.5...3.0, step: 0.05)
-                    Text(String(format: "当前：%.2f×（1.0 = 正常人语速）", settings.defaultRate))
+                    Slider(value: $settings.defaultRate, in: 0.5...3.0, step: 0.5)
+                    HStack {
+                        Text(String(format: "当前：%.2f×（1.0 = 正常人语速）", settings.defaultRate))
+                        Spacer()
+                        Button("重置 1.0×") { settings.defaultRate = 1.0 }
+                            .controlSize(.small)
+                    }
                 }
 
                 Section {
                     voicePicker("声音", voices: zhHansVoices, selection: $settings.voiceZhHans)
                 } header: {
                     Text("简体中文声音（旁白 / 默认）")
+                }
+
+                Section {
+                    Picker("旁白离线语音包", selection: $settings.narrationOfflinePackId) {
+                        Text("系统默认声（当前旁白）").tag("")
+                        ForEach(OfflineTTSManager.packs.filter { offlineMgr.isInstalled($0.id) }) { pack in
+                            Text(pack.displayName).tag(pack.id)
+                        }
+                    }
+                    if !settings.narrationOfflinePackId.isEmpty {
+                        let isMulti = OfflineTTSManager.packs.first(where: { $0.id == settings.narrationOfflinePackId })?.gender == "多音色"
+                        if isMulti {
+                            TextField("说话人编号（多音色包，如 0 / 1 / 2）", value: $settings.narrationOfflineSID, format: .number)
+                                .keyboardType(.numberPad)
+                                .autocorrectionDisabled()
+                        }
+                        Text("旁白（叙述部分）将使用所选离线语音包朗读，而不再是系统默认声；角色对话仍按各自性别包分配。需先「启用离线语音包朗读」并下载/导入该包。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                } header: {
+                    Text("旁白离线语音包（可选 · 解决旁白只能选系统声）")
                 }
 
                 Section {
@@ -74,7 +100,7 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                     Text("多音色包（AISHELL3，174 人）朗读时：男角色依次轮转男声编号列表、女角色依次轮转女声编号列表——不同角色自动配不同声音。单音色包忽略编号。先下载并试听，把满意的男女声编号填进来（逗号分隔可填多个）。")
                         .font(.caption2).foregroundColor(.secondary)
-                    Text("角色分配规则：优先在已下载的「女声」包之间轮转（女角色）/「男声」包之间轮转（男角色）；没有对应性别包时用多音色包按编号列表轮转。每个角色分配后固定不变，改标注或编号后下次朗读重新分配。")
+                    Text("角色分配规则：男角色在「男声」包间轮转、女角色在「女声」包间轮转、中性角色在「男/女/中性声」包间交替轮转；某性别没有对应包时用多音色包按编号列表轮转。每个角色分配后固定不变，改标注或编号后下次朗读重新分配。若某个包试听后无法确定性别，可标注为「中性」，专门服务中性角色。")
                         .font(.caption2).foregroundColor(.secondary)
                     ForEach(OfflineTTSManager.packs) { pack in
                         packRow(pack)
@@ -199,7 +225,7 @@ struct SettingsView: View {
                 Text("\(pack.gender) · 约 \(pack.sizeMB)MB")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                // 性别标注：决定该包进入哪个性别池（女声池/男声池/多音色）
+                // 性别标注：决定该包进入哪个性别池（女声池/男声池/中性声池/多音色）
                 if installed {
                     Picker("性别标注", selection: Binding(
                         get: { settings.offlinePackGenders[pack.id] ?? "" },
@@ -210,6 +236,7 @@ struct SettingsView: View {
                     )) {
                         Text("标注：女声").tag("female")
                         Text("标注：男声").tag("male")
+                        Text("标注：中性").tag("neutral")
                         Text("标注：多音色").tag("multi")
                         Text("标注：不参与").tag("")
                     }

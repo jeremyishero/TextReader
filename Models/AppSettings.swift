@@ -54,6 +54,12 @@ final class AppSettings: ObservableObject {
         "doom": "", "zh-ll": "", "chaowen": "",
     ] { didSet { persistPackGenders() } }
 
+    /// 旁白（叙述 / 默认）可改用已下载的离线语音包朗读（解决「旁白只能选系统几个声音」）。
+    /// 为空字符串 "" 表示仍用系统默认声；否则为某个已安装离线包 id。
+    @Published var narrationOfflinePackId: String = "" { didSet { save("narrationOfflinePackId", narrationOfflinePackId) } }
+    /// 多音色包（如 AISHELL3）作旁白时的说话人编号；单音色包忽略。
+    @Published var narrationOfflineSID: Int = 0 { didSet { save("narrationOfflineSID", narrationOfflineSID) } }
+
     init() { load() }
 
     // MARK: 持久化
@@ -98,6 +104,8 @@ final class AppSettings: ObservableObject {
            let dict = try? JSONDecoder().decode([String: String].self, from: data) {
             offlinePackGenders = dict
         }
+        if let p = d.string(forKey: "narrationOfflinePackId") { narrationOfflinePackId = p }
+        if d.object(forKey: "narrationOfflineSID") != nil { narrationOfflineSID = d.integer(forKey: "narrationOfflineSID") }
     }
 
     /// nil 值不能直接 set：首次启动 load() 会把 String? 属性置为 nil，didSet 触发本方法时

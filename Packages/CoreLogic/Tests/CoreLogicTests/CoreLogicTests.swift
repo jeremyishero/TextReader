@@ -307,6 +307,37 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(libu?.gender, .male, "吏部尚书应为男")
     }
 
+    // MARK: - v6 旁白名词/描写词不再是角色
+
+    /// v6 修复：旁白里的「姓氏+名词」（烤羊腿/马肉/花生）与说话动词前的描写词（委委屈屈→屈屈、简单）
+    /// 都不得被识别为角色；真实人名（顾琅/慕容衍/徐镜儿/屈封云/孙放）必须保留。
+    private let v6NoiseSample = """
+    第一章 厨房
+
+    顾琅啃着烤羊腿，含糊道：「好吃。」
+
+    慕容衍看着马肉火锅，皱眉道：「太膻了。」
+
+    徐镜儿剥着花生，轻声说：「尝尝这个。」
+
+    小太医看了一眼屈封云，委委屈屈道：「殿下恕罪。」
+
+    孙放看完信，指着信纸左下方几个简单的方方框框问：「这是什么？」
+    """
+
+    func testV6NarrationNounsAndDescriptorsAreNotRoles() {
+        let r = CharacterAnalyzer().analyze(v6NoiseSample)
+        let names = Set(r.roles.map { $0.canonicalName })
+        print("V6_NOISE: " + names.sorted().joined(separator: ","))
+        for junk in ["羊腿", "马肉", "花生", "屈屈", "简单", "含糊", "皱眉", "轻声", "啃着", "火锅"] {
+            XCTAssertFalse(names.contains(junk), "『\(junk)』是旁白名词/描写词，不应被识别为角色")
+        }
+        for real in ["顾琅", "慕容衍", "徐镜儿", "屈封云", "孙放"] {
+            XCTAssertTrue(names.contains(real), "真人名『\(real)』应保留")
+        }
+        XCTAssertLessThanOrEqual(r.roles.count, 6, "角色数应收敛，实为 \(names)")
+    }
+
     // MARK: - 角色表导出 Excel
 
     func testXlsxRoleExportRoundTrip() throws {

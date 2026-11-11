@@ -29,9 +29,14 @@ struct AnalysisView: View {
 
     @State private var activePanel: Panel? = .roles      // 默认展开「角色」
     @State private var visibleRoleCount = 10              // 角色分页：每页 10 个
-    @State private var renamingRole: CharacterRole?
-    @State private var renameText: String = ""
-    @State private var showRenameAlert = false
+    // 修改角色（称呼 + 性别）：用 sheet 承载 TextField + Picker
+    @State private var showEditSheet = false
+    @State private var editingRole: CharacterRole? = nil
+    @State private var editNameText: String = ""
+    @State private var editGender: Gender = .neutral
+    // 拉黑角色确认
+    @State private var showBlacklistConfirm = false
+    @State private var blacklistTarget: CharacterRole? = nil
     @State private var newBlackWord = ""
     @State private var newWhiteWord = ""
     @State private var showImportSheet = false
@@ -122,12 +127,18 @@ struct AnalysisView: View {
             }
             .navigationTitle("解析结果")
             .navigationBarTitleDisplayMode(.inline)
-            .alert("修改角色称呼", isPresented: $showRenameAlert) {
-                TextField("新称呼", text: $renameText)
-                Button("保存", action: commitRename)
+            .sheet(isPresented: $showEditSheet) {
+                editRoleSheet
+            }
+            .confirmationDialog(
+                "拉黑角色",
+                isPresented: $showBlacklistConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("拉黑", role: .destructive, action: executeBlacklist)
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("原称呼将保留为该角色的别名之一，朗读时同一角色仍使用同一声音。")
+                Text(blacklistConfirmMessage)
             }
             .alert("该词已存在", isPresented: $showDupAlert) {
                 Button("覆盖", action: moveDupWord)
@@ -403,10 +414,20 @@ struct AnalysisView: View {
                         .background(genderColor(role.gender).opacity(0.15))
                         .foregroundColor(genderColor(role.gender))
                         .cornerRadius(5)
+                    // 拉黑：确认后把该角色（称呼 + 别名）移入黑名单，重新解析时不再识别
                     Button {
-                        renamingRole = role
-                        renameText = role.canonicalName
-                        showRenameAlert = true
+                        blacklistTarget = role
+                        showBlacklistConfirm = true
+                    } label: {
+                        Image(systemName: "hand.raised.fill").font(.caption).foregroundColor(.orange)
+                    }
+                    .buttonStyle(.borderless)
+                    // 修改：打开 sheet 同时改称呼与性别
+                    Button {
+                        editingRole = role
+                        editNameText = role.canonicalName
+                        editGender = role.gender
+                        showEditSheet = true
                     } label: {
                         Image(systemName: "pencil").font(.caption)
                     }
@@ -727,16 +748,94 @@ struct AnalysisView: View {
         VoicePreviewer.shared.preview(voice, pitch: pitch)
     }
 
-    private func commitRename() {
-        let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let target = renamingRole, !newName.isEmpty,
+    // MARK: 修改角色（称呼 + 性别）
+
+    private var editRoleSheet: some View {
+        NavigationStack {
+            Form {
+                Section("角色称呼") {
+                    TextField("称呼", text: $editNameText)
+                        .autocorrectionDisabled()
+                }
+                Section("性别（用于自动选声匹配）") {
+                    Picker("性别", selection: $editGender) {
+                        Text("男").tag(Gender.male)
+                        Text("女").tag(Gender.female)
+                        Text("中性").tag(Gender.neutral)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section {
+                    Text("原称呼将保留为该角色的别名之一，朗读时同一角色仍使用同一声音；性别会用于离线/系统声音按男声、女声自动匹配。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("修改角色")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { showEditSheet = false }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("保存") { commitEdit() }
+                }
+            }
+        }
+    }
+
+    private func commitEdit() {
+        let newName = editNameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let target = editingRole, !newName.isEmpty,
               let idx = analysis.roles.firstIndex(where: { $0.id == target.id }) else { return }
         let old = analysis.roles[idx].canonicalName
+        let genderChanged = analysis.roles[idx].gender != editGender
         analysis.roles[idx].canonicalName = newName
+        analysis.roles[idx].gender = editGender
         if old != newName, !analysis.roles[idx].aliases.contains(old) {
             analysis.roles[idx].aliases.append(old)
         }
+        // 称呼变化：把该角色的手工声音覆盖（按旧称呼 key）迁移到新称呼，避免静默失效
+        if old != newName, let v = voiceOverrides[old] {
+            var updated = voiceOverrides
+            updated.removeValue(forKey: old)
+            updated[newName] = v
+            onVoiceChanged?(updated)
+        }
+        // 性别变化：清掉离线语音包分配缓存，下次朗读按新性别重新匹配声音
+        if genderChanged {
+            OfflineTTSManager.shared.resetAssignments()
+        }
         onEdited?()
+        showEditSheet = false
+        editingRole = nil
+    }
+
+    // MARK: 拉黑角色
+
+    private var blacklistConfirmMessage: String {
+        guard let role = blacklistTarget else { return "" }
+        return "将「\(role.canonicalName)」及其别名移入黑名单后，重新「整体解析」时该称呼将永不识别为角色；其现有台词改为旁白（中性声）朗读。确定拉黑吗？"
+    }
+
+    private func executeBlacklist() {
+        guard let role = blacklistTarget else { return }
+        let name = role.canonicalName
+        analysis.roles.removeAll { $0.id == role.id }
+        for i in analysis.segments.indices where analysis.segments[i].characterId == role.id {
+            analysis.segments[i].characterId = nil
+        }
+        // 称呼 + 别名一并移入黑名单：重新解析时永不识别为该角色
+        let words = [name] + role.aliases
+        var newBlack = blacklisted
+        for w in words where !newBlack.contains(w) {
+            newBlack.append(w)
+        }
+        // 黑名单优先：若其中某词碰巧在白名单，移出白名单
+        let newWhite = whitelisted.filter { !words.contains($0) }
+        onListsChanged?(newBlack, newWhite)
+        onEdited?()
+        blacklistTarget = nil
     }
 
     // MARK: 从文本导入角色定义

@@ -315,6 +315,24 @@ final class OfflineTTSManager: ObservableObject {
         }
     }
 
+    /// 旁白专用合成：直接用指定离线包（绕过性别池分配），供「旁白改用导入的离线声音」使用。
+    /// 多音色包按 sid 选说话人；单音色包忽略 sid。
+    func synthesizeWithPack(text: String, packId: String, sid: Int32, speed: Float) async -> Data? {
+        guard !text.isEmpty, isInstalled(packId) else { return nil }
+        let dir = packDir(packId).path
+        return await withCheckedContinuation { cont in
+            engineQueue.async { [weak self] in
+                guard let self else { cont.resume(returning: nil); return }
+                guard let tts = self.loadEngine(packId: packId, dir: dir) else {
+                    cont.resume(returning: nil); return
+                }
+                let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
+                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed)
+                cont.resume(returning: data)
+            }
+        }
+    }
+
     /// 分配：优先单音色性别包池轮转，其次多音色包 + 编号列表轮转。分配结果按角色缓存。
     private func assign(characterId: String, gender: Gender,
                         packGenders: [String: String],
@@ -331,6 +349,7 @@ final class OfflineTTSManager: ObservableObject {
         let femalePacks = pool("female")
         let malePacks = pool("male")
         let multiPacks = pool("multi")
+        let neutralPacks = pool("neutral")
 
         func rotatePack(_ poolIds: [String], cursorKey: String) -> String {
             let idx = rotationCursor[cursorKey] ?? 0
@@ -362,10 +381,18 @@ final class OfflineTTSManager: ObservableObject {
                 sid = rotateSID(femaleSIDs, cursorKey: "femaleSID")
             }
         case .neutral:
-            if !femalePacks.isEmpty {
-                packId = rotatePack(femalePacks, cursorKey: "femalePack")
-            } else if !malePacks.isEmpty {
-                packId = rotatePack(malePacks, cursorKey: "malePack")
+            // 中性 = 性别未知，绝不应一律配女声（否则「解析角色多为中性」时听起来全是女声）。
+            // 改为在「男声池 + 女声池 + 中性声池」之间交替轮转，未知性别角色的声音性别大致均衡；
+            // 完全没有对应性别包时，再退化到多音色包（按女声编号优先）。
+            var mixed: [String] = []
+            let maxN = max(malePacks.count, femalePacks.count, neutralPacks.count)
+            for i in 0..<maxN {
+                if i < malePacks.count { mixed.append(malePacks[i]) }
+                if i < femalePacks.count { mixed.append(femalePacks[i]) }
+                if i < neutralPacks.count { mixed.append(neutralPacks[i]) }
+            }
+            if !mixed.isEmpty {
+                packId = rotatePack(mixed, cursorKey: "neutralMixed")
             } else if !multiPacks.isEmpty {
                 packId = multiPacks[0]
                 sid = femaleSIDs.first ?? 0

@@ -40,6 +40,9 @@ struct ReadingView: View {
                     pendingStart = p.segmentIndex
                 }
             }
+            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides, onOpenTOC: {
+                showTOC = true
+            }, restartToken: restartToken)
             if paragraphs.isEmpty {
                 ScrollView {
                     Text("（未能提取到文本，可能是扫描版 PDF 或空文件）")
@@ -76,10 +79,6 @@ struct ReadingView: View {
                     }
                 }
             }
-            Divider()
-            PlayerBar(text: text, analysis: analysis, useAnalyzed: $useAnalyzed, startIndex: $pendingStart, voiceOverrides: voiceOverrides, onOpenTOC: {
-                showTOC = true
-            }, restartToken: restartToken)
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -420,11 +419,18 @@ struct ReadingView: View {
         // 离线语音包注入（优先于云端）：按角色性别池轮转分配——不同角色配不同声音
         player.offlineProvider = { text, gender, characterId in
             guard settings.offlineTTSEnabled else { return nil }
+            let speed = player.rate
+            // 旁白（characterId 为空）且用户指定了离线旁白包 → 直接用该包合成（解决「旁白只能选系统几个声音」）
+            if characterId.isEmpty, !settings.narrationOfflinePackId.isEmpty,
+               OfflineTTSManager.shared.isInstalled(settings.narrationOfflinePackId) {
+                return await OfflineTTSManager.shared.synthesizeWithPack(
+                    text: text, packId: settings.narrationOfflinePackId,
+                    sid: Int32(settings.narrationOfflineSID), speed: speed)
+            }
             let maleSIDs = settings.offlineTTSMaleSIDs
                 .split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
             let femaleSIDs = settings.offlineTTSFemaleSIDs
                 .split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
-            let speed = player.rate
             return await OfflineTTSManager.shared.synthesizeForCharacter(
                 text: text, characterId: characterId, gender: gender,
                 packGenders: settings.offlinePackGenders,

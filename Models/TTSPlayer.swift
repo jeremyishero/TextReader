@@ -236,6 +236,28 @@ final class TTSPlayer: NSObject, ObservableObject {
         isPlaying = true
     }
 
+    /// 快退/快进（秒）。离线/云端音频路径精确按时间跳转；系统 TTS 没有时间轴，按「段」近似。
+    /// - 离线/云端：AVAudioPlayer 直接改 currentTime（±seconds，并限制在 0~duration）。
+    /// - 系统 AVSpeechSynthesizer：后退=从当前段开头重读（≈回到上一句），前进=跳到下一段。
+    func seek(by seconds: TimeInterval) {
+        if let ap = audioPlayer, ap.duration > 0 {
+            ap.currentTime = min(max(ap.currentTime + seconds, 0), ap.duration)
+            return
+        }
+        guard isPlaying else { return }
+        // 系统 TTS 无时间轴：先停掉当前朗读（isPlaying 置 false，确保 stopSpeaking 即便触发
+        // didFinish→advance 也不会重复推进），再从目标段重新开始，避免旧朗读排队/跳两段。
+        isPlaying = false
+        audioPlayer?.stop()
+        synth.stopSpeaking(at: .immediate)
+        let total = (mode == .segments ? segments.count : plainChunks.count)
+        let target = seconds < 0 ? currentIndex : currentIndex + 1
+        guard target < total else { stop(); return }
+        currentIndex = target
+        isPlaying = true
+        speakCurrent()
+    }
+
     func stop() {
         audioPlayer?.stop()
         synth.stopSpeaking(at: .immediate)
