@@ -317,12 +317,12 @@ final class TTSPlayer: NSObject, ObservableObject {
             Task { @MainActor in self?.remoteToggle() }
             return .success
         }
-        rc.skipBackwardCommand.preferredIntervals = [5]
+        rc.skipBackwardCommand.preferredIntervals = [5.0]
         rc.skipBackwardCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.seek(by: -5) }
             return .success
         }
-        rc.skipForwardCommand.preferredIntervals = [5]
+        rc.skipForwardCommand.preferredIntervals = [5.0]
         rc.skipForwardCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.seek(by: 5) }
             return .success
