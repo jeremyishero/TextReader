@@ -829,7 +829,9 @@ public struct CharacterAnalyzer {
         guard let m = re.firstMatch(in: f, range: NSRange(location: 0, length: ns.length)) else { return nil }
         // 第 1 组 (.*?) 即「第一个说话动词之前的文本」= 说话人候选；
         // 注意动词组本身是 (?:...) 非捕获组，没有第 2 组，必须用第 1 组取 before。
-        guard let range1 = m.range(at: 1), range1.location != NSNotFound else { return nil }
+        // range(at:) 返回非可选 NSRange，需用 location 判 NSNotFound。
+        let range1 = m.range(at: 1)
+        guard range1.location != NSNotFound else { return nil }
         let before = ns.substring(with: range1)
         guard !before.isEmpty else { return nil }
         // 剥掉动词前的状语/噪声（"他淡淡"→"他"、"张三淡淡"→"张三"），再判断
@@ -866,7 +868,7 @@ public struct CharacterAnalyzer {
             if tail.count >= 2, ["那", "这"].contains(String(tail.first!)),
                Self.bareTitles.contains(String(tail.dropFirst())) { return tail }
             if tail.count >= 3, GenderLexicon.surnames.contains(String(tail.first!)),
-               Self.titleSuffixes.contains(String(tail[1...])) { return tail }
+               Self.titleSuffixes.contains(String(tail.dropFirst())) { return tail }
         }
         // 人名（从末尾锚点向前延伸，吃到名用字即止）
         for i in (0..<chars.count).reversed() {
