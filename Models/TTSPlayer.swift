@@ -420,7 +420,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 取（或创建）某个索引的预取任务；任务完成会把单元写入 prepared 缓存。
     private func prepTask(for idx: Int) -> Task<PreparedUnit?, Never> {
         if let t = prepTasks[idx] { return t }
-        let t = Task { @MainActor in
+        let t = Task { @MainActor -> PreparedUnit? in
             defer { self.prepTasks.removeValue(forKey: idx) }
             guard idx >= 0 else { return nil }
             let unit = await self.buildPrepared(idx)
