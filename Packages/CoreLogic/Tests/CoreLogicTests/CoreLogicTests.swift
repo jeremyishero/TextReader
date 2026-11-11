@@ -367,4 +367,56 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(parsed.last?.name, "徐镜儿")
         XCTAssertEqual(parsed.last?.gender, .female)
     }
+
+    // MARK: - v7 引号后/冒号前 说话人归因修复回归
+
+    /// v7 修复：引语之后的「追认说话人」（"「……」李四说" / "「……」他道"）
+    /// 必须被识别为说话人，而不是整段归旁白（否则「所有人都一个声音」）。
+    func testPostQuoteAttributionByName() {
+        let text = """
+        第一章 测试
+
+        「你来了。」林浩说。
+        """
+        let r = CharacterAnalyzer().analyze(text)
+        let names = Set(r.roles.map { $0.canonicalName })
+        XCTAssertTrue(names.contains("林浩"), "引语后的『林浩说』应识别 林浩 为角色（引号后归因）")
+        let seg = r.segments.first { $0.text.contains("你来了") }
+        XCTAssertNotNil(seg?.characterId, "『你来了』这句话应有说话人，而非被错归旁白")
+    }
+
+    /// 引语后的代词「他道」应回指上一句的说话人（同一角色），而不是新建角色或归旁白。
+    func testPostQuoteAttributionByPronoun() {
+        let text = """
+        第一章 测试
+
+        林浩笑道：「今日天气真好。」
+
+        「是啊。」他道。
+        """
+        let r = CharacterAnalyzer().analyze(text)
+        let lin = r.roles.first { $0.canonicalName == "林浩" }
+        XCTAssertNotNil(lin, "应存在角色 林浩")
+        XCTAssertTrue(lin?.aliases.contains("他") == true, "『他』应合并进上一说话人 林浩 的别名")
+        let seg = r.segments.first { $0.text.contains("是啊") }
+        XCTAssertNotNil(seg?.characterId, "『他道』应回指 林浩，该句话不应是旁白")
+    }
+
+    /// v7 修复：说话动词后带冒号（"X说：" / "X道："）的引号前说话人也要识别，
+    /// 旧实现要求动词必须紧贴句尾，导致 "X说：" 整句漏识别、台词错归旁白。
+    func testColonTolerantPrecedingSpeaker() {
+        let text = """
+        第一章 测试
+
+        林浩说：「你来了。」
+
+        苏婷道：「我也来了。」
+        """
+        let r = CharacterAnalyzer().analyze(text)
+        let names = Set(r.roles.map { $0.canonicalName })
+        XCTAssertTrue(names.contains("林浩"), "『林浩说：』应识别 林浩（冒号容忍）")
+        XCTAssertTrue(names.contains("苏婷"), "『苏婷道：』应识别 苏婷（冒号容忍）")
+        let seg = r.segments.first { $0.text.contains("你来了") }
+        XCTAssertNotNil(seg?.characterId, "『你来了』应有说话人 林浩，而非旁白")
+    }
 }

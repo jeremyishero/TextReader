@@ -87,6 +87,20 @@ final class TTSPlayer: NSObject, ObservableObject {
     private var currentIndex = 0
     private var mode: PlayMode = .plain
 
+    // MARK: 预取流水线（消除「解析一段读一段」的卡顿）
+    /// 已就绪的待播单元：离线/云端 TTS 为合成好的音频 Data；系统 AVSpeech 为预构建的 AVSpeechUtterance。
+    /// 播放到第 k 段时，其后的段已在后台并行合成/构建好，从而朗读连续、不再逐段卡顿。
+    private enum PreparedUnit {
+        case audio(Data, fallback: String, notice: String?)
+        case utterance(AVSpeechUtterance)
+    }
+    /// 已准备好的单元（索引 → 单元）。轮到该段时直接消费，无需现场等待合成。
+    private var prepared: [Int: PreparedUnit] = [:]
+    /// 进行中的预取任务（索引 → Task）。最多 prefetchDepth 个并发，对应「四个进程交替解析朗读」。
+    private var prepTasks: [Int: Task<PreparedUnit?, Never>] = [:]
+    /// 预取窗口：当前段播放时，并行预合成其后这么多段，保证朗读不卡顿。
+    private let prefetchDepth = 4
+
     /// 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech。
     /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
     var offlineProvider: ((String, Gender, String) async -> Data?)?
@@ -227,6 +241,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     // MARK: 播放控制
 
     func playSegments(_ segments: [SpeechSegment], startIndex: Int = 0, cloud: Bool = false) {
+        resetPipeline()
         self.segments = segments
         self.mode = .segments
         currentIndex = max(0, min(startIndex, segments.count - 1))
@@ -236,6 +251,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func playPlain(_ chunks: [String], startIndex: Int = 0, cloud: Bool = false) {
+        resetPipeline()
         self.plainChunks = chunks
         self.mode = .plain
         currentIndex = max(0, min(startIndex, chunks.count - 1))
@@ -256,6 +272,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         synth.continueSpeaking()
         isPlaying = true
         updateNowPlaying()
+        prefetch(from: currentIndex + 1)
     }
 
     /// 快退/快进（秒）。离线/云端音频路径精确按时间跳转；系统 TTS 没有时间轴，按「段」近似。
@@ -273,6 +290,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         isPlaying = false
         audioPlayer?.stop()
         synth.stopSpeaking(at: .immediate)
+        resetPipeline()
         let total = (mode == .segments ? segments.count : plainChunks.count)
         let target = seconds < 0 ? currentIndex : currentIndex + 1
         guard target < total else { stop(); return }
@@ -283,6 +301,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func stop() {
+        resetPipeline()
         audioPlayer?.stop()
         synth.stopSpeaking(at: .immediate)
         audioPlayer = nil
@@ -367,28 +386,148 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     private func speakCurrent() {
+        let idx = currentIndex
         guard let raw = currentText() else { finish(); return }
-        let text = applyCustomRules(raw)
-        currentSegmentIndex = currentIndex
-        speakingRawText = raw
-        nowSpeakingText = text
-        onIndexChange?(currentIndex, mode == .segments)
-
-        Task { @MainActor in
-            // 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech
-            let segId = segments.indices.contains(currentIndex) ? (segments[currentIndex].characterId ?? "") : ""
-            let segGender = roleGenders[segId] ?? .neutral
-            if let offlineProvider, let data = await offlineProvider(text, segGender, segId), isPlaying, speakingRawText == raw {
-                playAudioData(data, fallbackText: text, notice: "离线语音包合成失败，已回退")
-                return
-            }
-            if let cloudProvider, let data = await cloudProvider(text), isPlaying, speakingRawText == raw {
-                playAudioData(data, fallbackText: text, notice: nil)
-                return
-            }
-            guard isPlaying, speakingRawText == raw else { return }
-            speakLocal(text)
+        // 已预取好：直接消费，零等待；否则按需准备（后台合成/构建），准备完再播。
+        if let p = prepared.removeValue(forKey: idx) {
+            consumePrepared(p, raw: raw, idx: idx)
+            prefetch(from: idx + 1)
+            return
         }
+        let task = prepTask(for: idx)
+        Task { @MainActor in
+            guard self.isPlaying, self.currentIndex == idx else { return }
+            guard let p = await task.value else { return }
+            self.consumePrepared(p, raw: raw, idx: idx)
+        }
+        prefetch(from: idx + 1)
+    }
+
+    // MARK: 预取流水线实现
+
+    /// 当前总段数（取决于模式）。
+    private func totalCount() -> Int {
+        mode == .segments ? segments.count : plainChunks.count
+    }
+
+    /// 取消所有预取任务并清空缓冲（停止 / 跳转 / 重新开始时调用）。
+    private func resetPipeline() {
+        for (_, t) in prepTasks { t.cancel() }
+        prepTasks.removeAll()
+        prepared.removeAll()
+    }
+
+    /// 取（或创建）某个索引的预取任务；任务完成会把单元写入 prepared 缓存。
+    private func prepTask(for idx: Int) -> Task<PreparedUnit?, Never> {
+        if let t = prepTasks[idx] { return t }
+        let t = Task { @MainActor in
+            defer { self.prepTasks.removeValue(forKey: idx) }
+            guard idx >= 0 else { return nil }
+            let unit = await self.buildPrepared(idx)
+            if let u = unit { self.prepared[idx] = u }
+            return unit
+        }
+        prepTasks[idx] = t
+        return t
+    }
+
+    /// 预合成/预构建 [from, from+prefetchDepth) 的后续段（并发）。已就绪或在途的跳过。
+    /// 同时释放窗口之前的已播放缓冲，避免内存无限增长。
+    private func prefetch(from start: Int) {
+        let total = totalCount()
+        guard isPlaying, start < total else { return }
+        let end = min(start + prefetchDepth, total)
+        for i in start..<end {
+            if prepared[i] == nil && prepTasks[i] == nil {
+                prepTasks[i] = prepTask(for: i)
+            }
+        }
+        let keepFrom = max(0, start - 1)
+        let toRemove = prepared.keys.filter { $0 < keepFrom }
+        for k in toRemove { prepared.removeValue(forKey: k) }
+    }
+
+    /// 构建某索引的待播单元：离线语音包 → 云端 TTS → 系统 AVSpeech（依次回退）。
+    /// 离线/云端合成在引擎/网络线程进行，不阻塞主线程；多个预取任务并行推进，
+    /// 形成「四个进程交替解析朗读」的效果，消除逐段等待的卡顿。
+    private func buildPrepared(_ idx: Int) async -> PreparedUnit? {
+        let text: String
+        let segId: String
+        let gender: Gender
+        switch mode {
+        case .segments:
+            guard segments.indices.contains(idx) else { return nil }
+            text = segments[idx].text
+            segId = segments[idx].characterId ?? ""
+            gender = roleGenders[segId] ?? .neutral
+        case .plain:
+            guard plainChunks.indices.contains(idx) else { return nil }
+            text = plainChunks[idx]
+            segId = ""
+            gender = .neutral
+        }
+        let processed = applyCustomRules(text)
+        if let offlineProvider, let data = await offlineProvider(processed, gender, segId) {
+            return .audio(data, fallback: processed, notice: "离线语音包合成失败，已回退")
+        }
+        if let cloudProvider, let data = await cloudProvider(processed) {
+            return .audio(data, fallback: processed, notice: nil)
+        }
+        return .utterance(buildUtterance(for: idx, text: processed))
+    }
+
+    /// 消费一个已准备好的单元（设置高亮/进度并播放）。
+    private func consumePrepared(_ unit: PreparedUnit, raw: String, idx: Int) {
+        currentSegmentIndex = idx
+        speakingRawText = raw
+        nowSpeakingText = raw
+        onIndexChange?(idx, mode == .segments)
+        updateNowPlaying()
+        switch unit {
+        case .audio(let data, let fallback, let notice):
+            playAudioData(data, fallbackText: fallback, notice: notice)
+        case .utterance(let u):
+            synth.speak(u)
+        }
+    }
+
+    /// 预构建系统 TTS 的 AVSpeechUtterance（与 speakLocal 一致，但按指定索引取角色/情绪），
+    /// 以便预取段在播放前就完成构建，避免每段切换时的构建延迟。
+    private func buildUtterance(for idx: Int, text: String) -> AVSpeechUtterance {
+        var content = text
+        var postDelay: TimeInterval = 0.06
+        if content.hasSuffix(TextChunker.paragraphBreakMarker) {
+            content.removeLast()
+            postDelay = 0.45
+        }
+        let utterance = AVSpeechUtterance(string: content)
+        utterance.postUtteranceDelay = postDelay
+        let internalRate = rate * Self.rateScale
+        // 音量统一为最大：不同系统声音本身响度不同，情绪音量浮动会造成「一时大一时小」，全部固定 1.0
+        utterance.volume = 1.0
+        switch mode {
+        case .segments:
+            guard segments.indices.contains(idx) else {
+                utterance.voice = voiceForText(text) ?? defaultVoice
+                utterance.rate = internalRate
+                return utterance
+            }
+            let seg = segments[idx]
+            if let id = seg.characterId, let v = roleVoices[id] {
+                utterance.voice = v
+            } else {
+                utterance.voice = voiceForText(seg.text) ?? defaultVoice
+            }
+            let prosody = seg.emotion.prosody(baseRate: internalRate)
+            utterance.rate = prosody.rate
+            // 音高 = 情绪音高 × 角色音高补偿（性别区分），限制在引擎允许范围
+            let rolePitch = rolePitches[seg.characterId ?? ""] ?? 1.0
+            utterance.pitchMultiplier = min(max(prosody.pitch * rolePitch, 0.5), 2.0)
+        case .plain:
+            utterance.voice = voiceForText(text) ?? defaultVoice
+            utterance.rate = internalRate
+        }
+        return utterance
     }
 
     /// 用内存中的音频数据（WAV/MP3 等）播放本段。
@@ -407,35 +546,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 本地合成（AVSpeechSynthesizer）。显示语速 × rateScale 换算为内部标度。
     /// 块尾带 "\n"（TextChunker 段落标记）→ 修剪并在读完后插入明显停顿，实现「按段停顿」。
     private func speakLocal(_ text: String) {
-        var content = text
-        var postDelay: TimeInterval = 0.06
-        if content.hasSuffix(TextChunker.paragraphBreakMarker) {
-            content.removeLast()
-            postDelay = 0.45
-        }
-        let utterance = AVSpeechUtterance(string: content)
-        utterance.postUtteranceDelay = postDelay
-        let internalRate = rate * Self.rateScale
-        // 音量统一为最大：不同系统声音本身响度不同，情绪音量浮动会造成「一时大一时小」，全部固定 1.0
-        utterance.volume = 1.0
-        switch mode {
-        case .segments:
-            let seg = segments[currentIndex]
-            if let id = seg.characterId, let v = roleVoices[id] {
-                utterance.voice = v
-            } else {
-                utterance.voice = voiceForText(seg.text) ?? defaultVoice
-            }
-            let prosody = seg.emotion.prosody(baseRate: internalRate)
-            utterance.rate = prosody.rate
-            // 音高 = 情绪音高 × 角色音高补偿（性别区分），限制在引擎允许范围
-            let rolePitch = rolePitches[seg.characterId ?? ""] ?? 1.0
-            utterance.pitchMultiplier = min(max(prosody.pitch * rolePitch, 0.5), 2.0)
-        case .plain:
-            utterance.voice = voiceForText(text) ?? defaultVoice
-            utterance.rate = internalRate
-        }
-        synth.speak(utterance)
+        synth.speak(buildUtterance(for: currentIndex, text: text))
     }
 
 

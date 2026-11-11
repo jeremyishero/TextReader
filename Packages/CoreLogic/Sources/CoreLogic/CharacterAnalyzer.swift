@@ -319,12 +319,19 @@ public struct CharacterAnalyzer {
         // ---- Pass 1：说话人候选计数（所有长度；三字及以上构成「长名」） ----
         var speakerCounts: [String: Int] = [:]
         for unit in units {
-            if case .dialogue(_, let preceding) = unit {
+            if case .dialogue(_, let preceding, let postAttribution) = unit {
                 // 状语词只作负向特征，永不进入说话人候选
                 for m in Self.modifiersIn(preceding) { adverbHits[m, default: 0] += 1 }
                 if let raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist), raw != "他", raw != "她" {
                     speakerCounts[raw, default: 0] += 1
                     subjectHits[raw, default: 0] += 1
+                }
+                // v7：引语后的「追认说话人」也要计入主语（"「……」李四说 / 他道"），
+                // 否则主角的「他说」式台词会被漏掉、或整段归旁白。
+                if let raw2 = resolveSpeakerFollowing(postAttribution, blocked: blocked, whitelist: whitelist),
+                   raw2 != "他", raw2 != "她" {
+                    speakerCounts[raw2, default: 0] += 1
+                    subjectHits[raw2, default: 0] += 1
                 }
             }
         }
@@ -523,17 +530,27 @@ public struct CharacterAnalyzer {
                 return sceneRecent.last(where: { roleGender($0) == .male }) ?? sceneRecent.last
             }
         }
-        /// 说话人兜底：在引语前的短窗口内找已知角色名/别名、描述词或代词。
+        /// 说话人兜底：在引语前、引语后的短窗口内找已知角色名/别名、描述词或代词。
         /// 两级优先：先看**角色正式名称**（canonical）中最后出现者——动作句（「慕容衍一边躲一边继续鬼扯，"…」）
         /// 的说话人是句首的动作主体，不能被句中后出现的杂词/别名（如「鬼扯」）抢走；找不到再退到别名/描述词/代词。
-        func fallbackSpeaker(in preceding: String) -> String? {
+        func fallbackSpeaker(in preceding: String, post: String = "") -> String? {
             let tail = String(preceding.suffix(min(preceding.count, 24)))
+            let tailPost = String(post.prefix(24))
             var best: (pos: Int, len: Int, name: String)? = nil
             func consider(_ name: String) {
-                guard !name.isEmpty, let r = tail.range(of: name, options: .backwards) else { return }
-                let pos = tail.distance(from: tail.startIndex, to: r.lowerBound)
-                if best == nil || pos > best!.pos || (pos == best!.pos && name.count > best!.len) {
-                    best = (pos, name.count, name)
+                guard !name.isEmpty else { return }
+                // 优先在引语前窗口匹配，其次引语后窗口（记录相对位置以便比较）
+                if let r = tail.range(of: name, options: .backwards) {
+                    let pos = tail.distance(from: tail.startIndex, to: r.lowerBound)
+                    if best == nil || pos > best!.pos || (pos == best!.pos && name.count > best!.len) {
+                        best = (pos, name.count, name)
+                    }
+                }
+                if let r = tailPost.range(of: name, options: .backwards) {
+                    let pos = tailPost.distance(from: tailPost.startIndex, to: r.lowerBound)
+                    if best == nil || pos > best!.pos || (pos == best!.pos && name.count > best!.len) {
+                        best = (pos, name.count, name)
+                    }
                 }
             }
             // 第一优先：角色正式名称
@@ -567,12 +584,16 @@ public struct CharacterAnalyzer {
                 segments.append(SpeechSegment(id: "seg_\(segIndex)", text: t, characterId: nil, emotion: .neutral, position: segIndex))
                 segIndex += 1
 
-            case .dialogue(let quote, let preceding):
-                let emotion = EmotionLexicon.detect(before: preceding, quote: quote)
+            case .dialogue(let quote, let preceding, let postAttribution):
+                // v7：情绪识别同时参考引语前与引语后窗口（"「……」他愤怒地喊" 也能识别为怒）
+                let emotion = EmotionLexicon.detect(before: preceding + postAttribution, quote: quote)
                 var speakerId: String? = nil
                 var raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist)
                 if raw == nil {
-                    raw = fallbackSpeaker(in: preceding)
+                    raw = resolveSpeakerFollowing(postAttribution, blocked: blocked, whitelist: whitelist)
+                }
+                if raw == nil {
+                    raw = fallbackSpeaker(in: preceding, post: postAttribution)
                 }
                 if let raw {
                     if raw == "他" || raw == "她" {
@@ -675,7 +696,11 @@ public struct CharacterAnalyzer {
 
     private enum Unit {
         case narration(String)
-        case dialogue(quote: String, preceding: String)
+        /// 引语 + 其前的叙述（用于定位说话人）+ 其后的「追认说话人」窗口。
+        /// 引语后的文本（如「……」李四说）在真实网文中极常见，但旧实现只取 preceding，
+        /// 导致这类台词说话人永远丢失、整段被当成旁白（听起来「所有人都一个声音」）。
+        /// postAttribution 仅取引语后最前面的若干个字符作归属提示，其完整文本仍作为旁白段正常朗读。
+        case dialogue(quote: String, preceding: String, postAttribution: String)
     }
 
     /// 将文本切分为旁白段与对话段（对话带其前的叙述文本，用于定位说话人）。
@@ -699,7 +724,17 @@ public struct CharacterAnalyzer {
                     quote.append(text[j])
                     j = text.index(after: j)
                 }
-                units.append(.dialogue(quote: quote, preceding: preceding))
+                // 捕获引语后的「追认说话人」窗口（仅取前 24 个字符、到下一个引号为止）。
+                // 这段文本随后仍会作为旁白段正常朗读（被下一个 buffer 吸收），不会丢失；
+                // 这里仅把它作为说话人归属的提示，修复「「……」李四说 / 他道」这类台词语音丢失。
+                let afterClose = text.index(after: j)
+                var postAttr = ""
+                var k = afterClose
+                while k < text.endIndex, postAttr.count < 24, !open.keys.contains(text[k]) {
+                    postAttr.append(text[k])
+                    k = text.index(after: k)
+                }
+                units.append(.dialogue(quote: quote, preceding: preceding, postAttribution: postAttr))
                 i = text.index(after: j)
             } else {
                 buffer.append(c)
@@ -747,11 +782,12 @@ public struct CharacterAnalyzer {
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         let clause = (parts.last ?? window).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clause.isEmpty else { return nil }
-        let pattern = "([\\u4e00-\\u9fa5]{1,10})([地得了]?)(?:\(Self.strictSpeechVerbs))$"
+        // v7：说话动词后允许跟「地/了/得」以及常见句末标点（：，。、），覆盖 "X说：" / "X道：" 这类
+        // 真实网文里最常见的写法（旧实现要求动词必须紧贴句尾，导致 "X说：" 整句漏识别）。
+        let pattern = "([\\u4e00-\\u9fa5]{1,10})(?:\(Self.strictSpeechVerbs))[地得了]?\\s*[：:，。、]?$"
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = clause as NSString
         guard let m = re.firstMatch(in: clause, range: NSRange(location: 0, length: ns.length)) else { return nil }
-        guard m.range(at: 2).length == 0 else { return nil }   // 「X地说」等副词修饰跳过
         let start = m.range(at: 1).location
         if start > 0, Self.measurePrev.contains(Character(ns.substring(with: NSRange(location: start - 1, length: 1)))) {
             return nil
@@ -774,6 +810,70 @@ public struct CharacterAnalyzer {
         if raw == "他" || raw == "她" { return raw }
         if let t = Self.extractTitle(from: raw, whitelist: whitelist, blocked: blocked) { return t }
         return Self.extractPersonName(from: raw, whitelist: whitelist, blocked: blocked)
+    }
+
+    /// v7：解析**引语之后**的「追认说话人」（"「……」李四说" / "「……」他道"）。
+    /// 返回说话人表面形式（人名/称谓/代词），找不到返回 nil。
+    /// 设计要点：
+    /// - 只在引语后的文本里找**第一个**说话动词，取其前的名字——即紧接引语的说话人；
+    /// - 代词（他/她）直接返回，交由 resolvePronoun 回指上一说话人（安全、不会新建角色）；
+    /// - 名字取「动词前末尾」的人名/称谓形态（那少年 / 李四 / 苏婷…），避免把"站在一旁"等描述词并进名字。
+    private func resolveSpeakerFollowing(_ following: String, blocked: Set<String>, whitelist: Set<String>) -> String? {
+        let f = String(following.prefix(24))
+        guard !f.isEmpty else { return nil }
+        let verbs = Self.strictSpeechVerbs
+        // 第一个说话动词前的文本（非贪婪），动词后可跟 地/了/得 与句末标点
+        let pattern = "(.*?)(?:\(verbs))[地得了]?\\s*[：:，。]?"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = f as NSString
+        guard let m = re.firstMatch(in: f, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        // 第 1 组 (.*?) 即「第一个说话动词之前的文本」= 说话人候选；
+        // 注意动词组本身是 (?:...) 非捕获组，没有第 2 组，必须用第 1 组取 before。
+        guard let range1 = m.range(at: 1), range1.location != NSNotFound else { return nil }
+        let before = ns.substring(with: range1)
+        guard !before.isEmpty else { return nil }
+        // 剥掉动词前的状语/噪声（"他淡淡"→"他"、"张三淡淡"→"张三"），再判断
+        var b = before
+        var changed = true
+        let mods = Self.speechModifiers.sorted { $0.count > $1.count }
+        while changed, !b.isEmpty {
+            changed = false
+            if let last = b.last, Self.funcChars.contains(last) || Self.tailNoise.contains(last) {
+                b.removeLast(); changed = true; continue
+            }
+            for mod in mods where b.hasSuffix(mod) && b.count >= mod.count {
+                b = String(b.dropLast(mod.count)); changed = true; break
+            }
+        }
+        guard !b.isEmpty else { return nil }
+        if b.hasSuffix("他") { return "他" }
+        if b.hasSuffix("她") { return "她" }
+        if whitelist.contains(b) { return b }
+        if let name = nameAtEnd(b, whitelist: whitelist, blocked: blocked) { return name }
+        return nil
+    }
+
+    /// 从字符串末尾往前取到最后一个「人名/称谓」形态子串（用于引语后追认说话人）。
+    /// 先试称谓（含 那/这 + 称谓，如「那少年」），再试人名（姓/复姓/阿小老 锚点 + 名用字延伸）。
+    private func nameAtEnd(_ s: String, whitelist: Set<String>, blocked: Set<String>) -> String? {
+        let chars = Array(s)
+        guard !chars.isEmpty else { return nil }
+        // 称谓（独立称谓 / 那·这 + 称谓 / 姓 + 称谓后缀）
+        for i in (0..<chars.count).reversed() {
+            let tail = String(chars[i...])
+            if whitelist.contains(tail) { return tail }
+            if Self.bareTitles.contains(tail) { return tail }
+            if tail.count >= 2, ["那", "这"].contains(String(tail.first!)),
+               Self.bareTitles.contains(String(tail.dropFirst())) { return tail }
+            if tail.count >= 3, GenderLexicon.surnames.contains(String(tail.first!)),
+               Self.titleSuffixes.contains(String(tail[1...])) { return tail }
+        }
+        // 人名（从末尾锚点向前延伸，吃到名用字即止）
+        for i in (0..<chars.count).reversed() {
+            let sub = String(chars[i...])
+            if let n = Self.extractPersonName(from: sub, whitelist: whitelist, blocked: blocked) { return n }
+        }
+        return nil
     }
     /// 扫描误报黑名单（姓氏+常用词组合、常见双字词等；数据驱动，持续补充；另支持用户自定义名单）
     static let nameStopwords: Set<String> = [
