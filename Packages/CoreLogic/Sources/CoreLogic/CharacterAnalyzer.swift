@@ -322,16 +322,17 @@ public struct CharacterAnalyzer {
             if case .dialogue(_, let preceding, let postAttribution) = unit {
                 // 状语词只作负向特征，永不进入说话人候选
                 for m in Self.modifiersIn(preceding) { adverbHits[m, default: 0] += 1 }
-                if let raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist), raw != "他", raw != "她" {
-                    speakerCounts[raw, default: 0] += 1
-                    subjectHits[raw, default: 0] += 1
+                // 引号前说话人优先；只有「引号前完全没解析出说话人」时，
+                // 才回退到引语后的「追认说话人」（"「……」李四说 / 他道"）。
+                // 注意：绝不能两者都计，否则下一段旁白（如「苏婷微微一笑：」）
+                // 会被错当成当前对话的说话人，虚高其频次并污染 canonical 合并。
+                var raw = resolveSpeaker(preceding, blocked: blocked, whitelist: whitelist)
+                if raw == nil {
+                    raw = resolveSpeakerFollowing(postAttribution, blocked: blocked, whitelist: whitelist)
                 }
-                // v7：引语后的「追认说话人」也要计入主语（"「……」李四说 / 他道"），
-                // 否则主角的「他说」式台词会被漏掉、或整段归旁白。
-                if let raw2 = resolveSpeakerFollowing(postAttribution, blocked: blocked, whitelist: whitelist),
-                   raw2 != "他", raw2 != "她" {
-                    speakerCounts[raw2, default: 0] += 1
-                    subjectHits[raw2, default: 0] += 1
+                if let r = raw, r != "他", r != "她" {
+                    speakerCounts[r, default: 0] += 1
+                    subjectHits[r, default: 0] += 1
                 }
             }
         }
