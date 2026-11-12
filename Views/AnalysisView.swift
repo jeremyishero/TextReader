@@ -794,6 +794,9 @@ struct AnalysisView: View {
                     text: "你好，我是中国人",
                     packId: offline.packId, sid: offline.sid, speed: 1.0) {
                     VoicePreviewer.shared.playAudio(wav)
+                } else {
+                    // 离线合成无可用音频（引擎未就绪/产出静音）时回退系统声试听，避免点击无反应
+                    previewSystemVoice(for: role, chosen: nil)
                 }
             }
             return

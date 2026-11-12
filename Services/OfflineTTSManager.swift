@@ -405,14 +405,11 @@ final class OfflineTTSManager: ObservableObject {
            isInstalled(cached.packId) {
             return (cached.packId, cached.sid)
         }
-        // installedIds 由调用方在进入后台队列前算好（含 zip 导入的自定义包），这里只做纯内存轮转
-        func genderOf(_ id: String) -> String {
-            // 用户显式标注优先（"" 表示「不参与」）；未标注的导入包按默认性别参与轮转
-            if let g = packGenders[id] { return g }
-            return Self.defaultGender(for: id)
-        }
+        // installedIds 由调用方在进入后台队列前算好（含 zip 导入的自定义包），这里只做纯内存轮转。
+        // 仅纳入「用户显式标注性别」的包（与 320d2b40 行为一致）：未标注的包不参与自动分配，
+        // 避免离线引擎在该设备产出静音时仍被路由。显式标注过性别的导入包照常参与轮转。
         func pool(_ g: String) -> [String] {
-            installedIds.filter { genderOf($0) == g }
+            installedIds.filter { packGenders[$0] == g }
         }
         let femalePacks = pool("female")
         let malePacks = pool("male")
@@ -495,7 +492,39 @@ final class OfflineTTSManager: ObservableObject {
         }
         SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio)
         guard ok else { return nil }
-        return Self.normalizeWAV(buffer)
+        let normalized = Self.normalizeWAV(buffer)
+        // 静音兜底：归一化后峰值仍低于可闻阈值（离线引擎产出空样本/本底噪声等），
+        // 视为合成失败，返回 nil 交由调用方回退到系统 AVSpeech，
+        // 避免「文件合法但无声」导致整段朗读静默。
+        return Self.isAudibleWAV(normalized) ? normalized : nil
+    }
+
+    /// 判断 16-bit PCM WAV 是否实质有声（峰值超过可闻阈值）。
+    /// 非 16-bit PCM（如 float32）或解析失败的 WAV 一律视为有声，避免误丢弃合法音频。
+    private static func isAudibleWAV(_ data: Data) -> Bool {
+        guard data.count > 44,
+              data[0] == 0x52, data[1] == 0x49, data[2] == 0x52, data[3] == 0x46,
+              data[8] == 0x57, data[9] == 0x41, data[10] == 0x56, data[11] == 0x45 else { return true }
+        let bits = Int(data[34]) | (Int(data[35]) << 8)
+        guard bits == 16 else { return true }
+        var offset = 12, dataOffset = -1, dataSize = 0
+        while offset + 8 <= data.count {
+            let ck = String(data: data[offset..<offset + 4], encoding: .ascii) ?? ""
+            let sz = Int(data[offset + 4]) | (Int(data[offset + 5]) << 8)
+                      | (Int(data[offset + 6]) << 16) | (Int(data[offset + 7]) << 24)
+            if ck == "data" { dataOffset = offset + 8; dataSize = sz; break }
+            offset += 8 + sz + (sz & 1)
+        }
+        guard dataOffset > 0, dataSize > 0, dataOffset + dataSize <= data.count else { return true }
+        let slice = data.subdata(in: dataOffset..<dataOffset + dataSize)
+        let samples = slice.withUnsafeBytes { raw in Array(raw.bindMemory(to: Int16.self)) }
+        var peak: Int = 0
+        for s in samples {
+            let a = abs(Int(s))
+            if a > peak { peak = a }
+        }
+        // 阈值约 -44 dBFS（32767 的 ~0.6%），低于此视为静音/本底噪声
+        return peak >= 200
     }
 
     /// 将 VITS 生成的 WAV 做响度归一化（RMS 对齐到目标值，且峰值不超过上限），

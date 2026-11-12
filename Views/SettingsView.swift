@@ -362,6 +362,9 @@ struct SettingsView: View {
                 speed: 1.0
             ) {
                 VoicePreviewer.shared.playAudio(wav)
+            } else {
+                // 离线合成无可用音频时回退系统声试听，避免点击无反应
+                VoicePreviewer.shared.preview(nil)
             }
         }
     }
