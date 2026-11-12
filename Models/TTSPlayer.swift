@@ -306,6 +306,11 @@ final class TTSPlayer: NSObject, ObservableObject {
         synth.stopSpeaking(at: .immediate)
         audioPlayer = nil
         isPlaying = false
+        // 清空已装载内容：停止即结束本次播放会话，让 isLoaded 归 false。
+        // 否则播放条会显示「继续」并走 resume()，而此时已无内容可续（既不会重播、也跳不到断点）。
+        // 清空后按钮变「播放」，经 requestStartPlayback(from:nil) 由 ReadingView 按保存进度重新起播。
+        segments = []
+        plainChunks = []
         currentIndex = 0
         currentSegmentIndex = -1
         nowSpeakingText = nil

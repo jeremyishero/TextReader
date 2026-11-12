@@ -103,9 +103,29 @@ func importFile(from url: URL) async throws {
     // MARK: 进度记忆
 
     /// 保存某文档的朗读进度（断点续读）。
-    func updateProgress(documentId: UUID, segmentIndex: Int, analyzed: Bool) {
+    /// - paragraphIndex: 可选，本次朗读所在段落；传 nil 时保留此前已记录的阅读段落，不被朗读回调冲掉。
+    func updateProgress(documentId: UUID, segmentIndex: Int, analyzed: Bool, paragraphIndex: Int? = nil) {
         guard let i = documents.firstIndex(where: { $0.id == documentId }) else { return }
-        documents[i].progress = ReadingProgress(segmentIndex: segmentIndex, analyzed: analyzed, updatedAt: Date())
+        let keepParagraph = paragraphIndex ?? documents[i].progress?.paragraphIndex
+        documents[i].progress = ReadingProgress(segmentIndex: segmentIndex, analyzed: analyzed,
+                                                paragraphIndex: keepParagraph, updatedAt: Date())
+        saveIndex()
+    }
+
+    /// 仅更新「阅读位置」（目录跳转 / 纯阅读滚动），不动朗读分段索引与分声模式。
+    /// 尚无进度时创建一条：朗读起点用传入的 segmentIndex，保证「继续朗读」也能从该章节附近开始。
+    func updateReadingPosition(documentId: UUID, paragraphIndex: Int, segmentIndex: Int, analyzed: Bool) {
+        guard let i = documents.firstIndex(where: { $0.id == documentId }) else { return }
+        if var p = documents[i].progress {
+            p.paragraphIndex = paragraphIndex
+            p.segmentIndex = segmentIndex
+            p.analyzed = analyzed
+            p.updatedAt = Date()
+            documents[i].progress = p
+        } else {
+            documents[i].progress = ReadingProgress(segmentIndex: segmentIndex, analyzed: analyzed,
+                                                    paragraphIndex: paragraphIndex, updatedAt: Date())
+        }
         saveIndex()
     }
 

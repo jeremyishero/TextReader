@@ -31,12 +31,24 @@ struct ReadingView: View {
     @State private var docRules: [CustomRule] = []      // 每文档自定义朗读规则（≤20 条）
     @State private var showTOC = false                  // 章节目录
     @State private var chapterList: [(index: Int, title: String)] = []   // (段落索引, 章节标题)
+    @State private var lastVisibleParagraph: Int? = nil        // 最近一次阅读所在段落（目录跳转 / 高亮）
+    @State private var restoreParagraph: Int? = nil            // 重进时要滚回的段落
+    @State private var pendingStartAnalyzed: Bool? = nil       // 断点续读保存时的分声模式
+    @State private var entryProgress: ReadingProgress? = nil   // 进入页面时的进度快照（Banner 只显示一次）
+
+    /// item 是进入页面时的值快照；进度写入 store 后不会回写到 item，
+    /// 因此统一从 store 取最新进度，保证续读用的是刚保存的值。
+    private var currentProgress: ReadingProgress? {
+        store.documents.first { $0.id == item.id }?.progress
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if let p = item.progress {
+            if let p = entryProgress {
                 BannerView(text: "上次读到第 \(p.segmentIndex + 1) 段") {
                     pendingStart = p.segmentIndex
+                    pendingStartAnalyzed = p.analyzed   // 按保存时的分声模式还原分段体系
+                    entryProgress = nil                // 用过即隐藏，避免朗读推进时反复刷新
                     player.requestStartPlayback(from: p.segmentIndex)
                 }
             }
@@ -56,6 +68,10 @@ struct ReadingView: View {
                                 ParagraphRow(text: paragraphs[idx],
                                              isHighlighted: highlightIndex == idx,
                                              index: idx)
+                                    // 手动滚动阅读时记录可见段落；朗读中由 onReceive 的高亮链路负责，避免互相覆盖
+                                    .onAppear {
+                                        if !player.isPlaying { lastVisibleParagraph = idx }
+                                    }
                             }
                         }
                         .padding()
@@ -65,11 +81,17 @@ struct ReadingView: View {
                         let idx = paragraphIndex(for: speaking)
                         if let idx, idx != highlightIndex {
                             highlightIndex = idx
+                            lastVisibleParagraph = idx   // 朗读位置也是阅读位置
                             withAnimation {
                                 proxy.scrollTo(idx, anchor: .center)
                             }
                         }
                     }
+                    // 重进 / 重启 APP 后，滚回上次阅读的段落（不依赖是否曾点过播放）。
+                    // onAppear 覆盖「loadText 先跑完」；onChange 覆盖「.task 稍晚才设置 restoreParagraph」。
+                    // 两者都用完即置 nil，幂等，不会重复滚动。
+                    .onAppear { restoreScrollIfNeeded(proxy: proxy) }
+                    .onChange(of: restoreParagraph) { _ in restoreScrollIfNeeded(proxy: proxy) }
                     // 章节目录（在 ScrollViewReader 作用域内，才能用 proxy 跳转）
                     .sheet(isPresented: $showTOC) {
                         tocSheet(proxy: proxy)
@@ -171,7 +193,12 @@ struct ReadingView: View {
         }
         .onChange(of: scenePhase) { phase in
             // 从后台/锁屏回到前台时，立即把高亮同步到当前朗读位置
-            if phase == .active { syncHighlightNow() }
+            if phase == .active {
+                syncHighlightNow()
+            } else {
+                // 进后台/失活：系统可能直接杀掉 App，onDisappear 不保证触发，这里先落盘
+                saveProgressNow()
+            }
         }
         .onDisappear {
             saveProgressNow()
@@ -245,6 +272,17 @@ struct ReadingView: View {
         player.customRules = docRules
         // 章节目录：形如「第X章/回/卷/节 …」的短段落
         chapterList = Self.detectChapters(in: paragraphs)
+        // 重进时准备滚回上次阅读的段落（优先阅读段落索引；旧档无该字段时退回朗读段映射）
+        let progressSnapshot = currentProgress
+        entryProgress = progressSnapshot
+        if let p = progressSnapshot {
+            if let para = p.paragraphIndex, paragraphs.indices.contains(para) {
+                restoreParagraph = para
+            } else if let para = paragraphForSegmentIndex(p.segmentIndex, analyzed: p.analyzed),
+                      paragraphs.indices.contains(para) {
+                restoreParagraph = para
+            }
+        }
         // 若朗读仍在进行（如从后台/锁屏返回），立即把高亮同步到当前位置
         syncHighlightNow()
     }
@@ -264,6 +302,21 @@ struct ReadingView: View {
     }
 
     // MARK: 章节目录
+
+    /// 滚回上次阅读段落（重进 / 重启后）。用完即清空，保证只恢复一次。
+    private func restoreScrollIfNeeded(proxy: ScrollViewProxy) {
+        guard let target = restoreParagraph,
+              paragraphs.indices.contains(target) else { return }
+        let t = target
+        highlightIndex = t
+        lastVisibleParagraph = t
+        restoreParagraph = nil
+        // 延迟一拍，等 LazyVStack 完成布局，确保远处 id 可被 scrollTo 命中
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            withAnimation { proxy.scrollTo(t, anchor: .top) }
+        }
+    }
 
     /// 当前朗读位置所在章节（段落索引）
     private var currentChapterParagraph: Int? {
@@ -306,11 +359,19 @@ struct ReadingView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        // 视图跳转：滚动到该章节段落
+                        // 视图跳转：滚动到该章节段落，并立即把「阅读位置」落盘
                         showTOC = false
+                        highlightIndex = ch.index
+                        lastVisibleParagraph = ch.index
+                        let seg = nearestSegmentIndex(forParagraph: ch.index) ?? 0
+                        store.updateReadingPosition(documentId: item.id,
+                                                    paragraphIndex: ch.index,
+                                                    segmentIndex: seg,
+                                                    analyzed: player.useAnalyzedPlayback)
                         withAnimation {
                             proxy.scrollTo(ch.index, anchor: .top)
                         }
+                        showToast("已定位到「\(ch.title)」")
                     }
                 }
             }
@@ -353,6 +414,21 @@ struct ReadingView: View {
             }
         }
         return lastValid
+    }
+
+    /// 旧档只有朗读分段索引、没有阅读段落索引：按保存时的分声模式取对应分段文本，反查所在段落。
+    private func paragraphForSegmentIndex(_ idx: Int, analyzed: Bool) -> Int? {
+        guard idx >= 0 else { return nil }
+        let texts: [String]
+        if analyzed, let a = analysis, !a.segments.isEmpty {
+            texts = a.segments.map { $0.text }
+        } else {
+            texts = TextChunker().chunk(text)
+        }
+        guard texts.indices.contains(idx) else { return nil }
+        let key = String(texts[idx].trimmingCharacters(in: .whitespacesAndNewlines).prefix(12))
+        guard !key.isEmpty else { return nil }
+        return paragraphs.firstIndex { $0.contains(key) }
     }
 
     // MARK: 朗读高亮
@@ -403,11 +479,13 @@ struct ReadingView: View {
     // MARK: 播放器接线（进度记忆 + 云端 TTS）
 
     private func configurePlayer() {
-        // 进度回调：节流 3 秒保存一次，避免频繁写盘
+        // 进度回调：节流 3 秒保存一次，避免频繁写盘。
+        // 朗读段索引与阅读段落索引一起落盘，保证两条链路始终一致。
         player.onIndexChange = { idx, analyzed in
             if Date().timeIntervalSince(lastSaveAt) > 3 {
                 lastSaveAt = Date()
-                store.updateProgress(documentId: item.id, segmentIndex: idx, analyzed: analyzed)
+                store.updateProgress(documentId: item.id, segmentIndex: idx, analyzed: analyzed,
+                                     paragraphIndex: lastVisibleParagraph ?? highlightIndex)
             }
         }
         // 云端 TTS 注入（未启用/未配置时返回 nil → 播放器自动用本地合成）
@@ -449,13 +527,26 @@ struct ReadingView: View {
 
     private func saveProgressNow() {
         let idx = player.currentSegmentIndex
-        guard idx >= 0 else { return }
-        store.updateProgress(documentId: item.id, segmentIndex: idx, analyzed: player.useAnalyzedPlayback)
+        let para = lastVisibleParagraph ?? highlightIndex
+        if idx >= 0 {
+            // 朗读中：朗读段索引为准，同时带上阅读段落
+            store.updateProgress(documentId: item.id, segmentIndex: idx,
+                                 analyzed: player.useAnalyzedPlayback, paragraphIndex: para)
+        } else if let para {
+            // 纯阅读 / 停止后从未朗读：朗读段索引是 -1，也必须把阅读位置落盘。
+            // 已有朗读断点时保留原 segmentIndex / analyzed，只更新段落索引。
+            let prev = currentProgress
+            let seg = prev?.segmentIndex ?? (nearestSegmentIndex(forParagraph: para) ?? 0)
+            let analyzed = prev?.analyzed ?? player.useAnalyzedPlayback
+            store.updateReadingPosition(documentId: item.id, paragraphIndex: para,
+                                        segmentIndex: seg, analyzed: analyzed)
+        }
     }
 
     // MARK: 播放（全局播放条 / 锁屏控件共用）
 
     /// 组装声音并从指定段索引开始朗读（全局播放条的「播放/继续」、锁屏控件、目录 ▶︎ 从本章朗读 共用）。
+    /// 关键：断点续读必须按「保存时的分声模式」还原分段体系，否则普通分块索引会被套到分声段上（或反之），位置错乱。
     private func startPlayback(from index: Int? = nil) {
         player.rate = settings.defaultRate
         player.autoVoiceSwitch = settings.autoVoiceSwitch
@@ -465,10 +556,41 @@ struct ReadingView: View {
         player.setDefaultVoice(defaultVoice)
         player.setLanguageVoices(languageVoices(defaultVoice: defaultVoice))
 
-        let start = index ?? pendingStart ?? 0
+        let saved = currentProgress
+        // 模式优先级：Banner 显式指定的保存模式 > 无起点时按进度里的模式 > 目录 ▶︎ 等显式起点按当前开关
+        if let explicitMode = pendingStartAnalyzed {
+            player.useAnalyzedPlayback = explicitMode
+        } else if index == nil, let s = saved {
+            player.useAnalyzedPlayback = s.analyzed
+        }
+        let wantAnalyzed = player.useAnalyzedPlayback
+        let canAnalyze: Bool = {
+            guard wantAnalyzed, let a = analysis, !a.segments.isEmpty else { return false }
+            return true
+        }()
+        // 只在普通模式下才做全量分块，分声模式直接用已缓存的解析结果，避免大文件每次起播都重切一遍
+        let chunks: [String] = canAnalyze ? [] : TextChunker().chunk(text)
+        let total = canAnalyze ? (analysis?.segments.count ?? 0) : chunks.count
+        guard total > 0 else {
+            pendingStart = nil
+            pendingStartAnalyzed = nil
+            return
+        }
+
+        let base = index ?? pendingStart ?? saved?.segmentIndex ?? 0
+        // 模式与保存时不一致（典型：旧档存的是分声段，但重进后解析缓存暂不可用）时，
+        // 用阅读段落重新映射，避免把另一套体系的索引直接套过来导致「跳到书尾/开头」。
+        var start = base
+        if let s = saved, s.analyzed != canAnalyze,
+           let para = s.paragraphIndex,
+           let mapped = nearestSegmentIndex(forParagraph: para) {
+            start = mapped
+        }
+        start = max(0, min(start, total - 1))   // 索引范围校验，杜绝越界被静默钳到末尾
+
         let cloud = cloudEnabled
 
-        if player.useAnalyzedPlayback, let a = analysis, !a.segments.isEmpty {
+        if canAnalyze, let a = analysis {
             // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
             let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)
             var map: [String: AVSpeechSynthesisVoice] = [:]
@@ -490,11 +612,10 @@ struct ReadingView: View {
             player.setRolePitches(pitches)
             player.playSegments(a.segments, startIndex: start, cloud: cloud)
         } else {
-            guard !text.isEmpty else { return }
-            let chunks = TextChunker().chunk(text)
             player.playPlain(chunks, startIndex: start, cloud: cloud)
         }
-        pendingStart = nil   // 起点只生效一次
+        pendingStart = nil            // 起点只生效一次
+        pendingStartAnalyzed = nil
     }
 
     private func resolveVoice(_ identifier: String?) -> AVSpeechSynthesisVoice? {
