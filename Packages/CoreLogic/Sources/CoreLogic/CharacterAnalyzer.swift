@@ -725,18 +725,37 @@ public struct CharacterAnalyzer {
                     quote.append(text[j])
                     j = text.index(after: j)
                 }
-                // 捕获引语后的「追认说话人」窗口（仅取前 24 个字符、到下一个引号为止）。
-                // 这段文本随后仍会作为旁白段正常朗读（被下一个 buffer 吸收），不会丢失；
-                // 这里仅把它作为说话人归属的提示，修复「「……」李四说 / 他道」这类台词语音丢失。
-                let afterClose = text.index(after: j)
+                // 捕获引语后的「追认说话人」窗口。必须严格收紧到「紧邻闭引号的短追认」：
+                //   · 只认闭引号后紧跟的「人名/代词 + 说话动词」（"「……」李四说 / 他道"）；
+                //   · 遇到句末标点、换行、逗号/冒号、或下一个引号立即停止，绝不跨句；
+                //   · 最多 12 字。
+                // 旧实现一路读到下一个引号或 24 字，会把下一段旁白里的名字
+                //（如 "\n\n苏婷微微一笑：" / "\n\n林兄劝道："）误当成本句说话人，
+                // 造成台词错归、代词/别名合并错乱。收紧后这类跨段噪声一律不进 post。
+                let afterClose: String.Index = j < text.endIndex ? text.index(after: j) : text.endIndex
+                let sentEnd: Set<Character> = ["。", "！", "？", "!", "?", "；", ";", "\n", "\r"]
+                let clauseEnd: Set<Character> = ["，", ",", "、", "：", ":"]
+                let spaces: Set<Character> = [" ", "\t", "　"]
                 var postAttr = ""
                 var k = afterClose
-                while k < text.endIndex, postAttr.count < 24, !open.keys.contains(text[k]) {
-                    postAttr.append(text[k])
+                var skippedSpace = false
+                while k < text.endIndex, postAttr.count < 12 {
+                    let ch = text[k]
+                    if sentEnd.contains(ch) || clauseEnd.contains(ch) || open.keys.contains(ch) { break }
+                    if spaces.contains(ch) {
+                        // 允许越过闭引号后紧邻的一个空格，但不允许跨段
+                        if postAttr.isEmpty, !skippedSpace {
+                            skippedSpace = true
+                            k = text.index(after: k)
+                            continue
+                        }
+                        break
+                    }
+                    postAttr.append(ch)
                     k = text.index(after: k)
                 }
                 units.append(.dialogue(quote: quote, preceding: preceding, postAttribution: postAttr))
-                i = text.index(after: j)
+                i = afterClose
             } else {
                 buffer.append(c)
                 i = text.index(after: i)
