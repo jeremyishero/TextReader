@@ -51,6 +51,15 @@ final class OfflineTTSManager: ObservableObject {
     @Published var errors: [String: String] = [:]       // packId → 最近一次下载失败原因
     /// 磁盘安装状态版本号：删除/下载完成/导入成功后 +1，驱动 SwiftUI 重绘各行（isInstalled 是磁盘查询，本身不发布变化）
     @Published var revision: Int = 0
+    /// 诊断：最近一次离线合成失败的具体原因（nil = 最近一次合成成功）。
+    /// 在设置页展示，用于在真机上直接定位「离线不出声」卡在哪一步：
+    /// 引擎加载失败 / 引擎创建失败 / 合成返回 0 样本 / 产出静音 WAV / 自动分配未选中包。
+    @Published var lastOfflineError: String? = nil
+
+    /// 失败点上报（engineQueue 后台线程调用，跳回主线程写 @Published）
+    private func reportOfflineError(_ msg: String) {
+        DispatchQueue.main.async { self.lastOfflineError = msg }
+    }
 
     /// 大文件下载专用会话：请求/资源超时放宽，避免 115MB 模型被默认 60s 超时掐断
     private static let session: URLSession = {
@@ -367,6 +376,7 @@ final class OfflineTTSManager: ObservableObject {
                                        packGenders: packGenders, installedIds: installedIds,
                                        maleSIDs: maleSIDs, femaleSIDs: femaleSIDs)
                 guard let (packId, sid) = plan, self.isInstalled(packId) else {
+                    self.reportOfflineError("自动分配未选中任何语音包（检查：离线总开关是否打开、导入包是否已标注性别、包是否已安装）")
                     cont.resume(returning: nil); return
                 }
                 let dir = self.packDir(packId).path
@@ -478,6 +488,7 @@ final class OfflineTTSManager: ObservableObject {
         let audio = SherpaOnnxOfflineTtsGenerate(tts, text, sid, speed)
         guard let audio, audio.pointee.n > 0 else {
             if let audio { SherpaOnnxDestroyOfflineTtsGeneratedAudio(audio) }
+            reportOfflineError("\(packId)：合成返回 0 样本（引擎未产出任何音频）")
             return nil
         }
         let n = audio.pointee.n
@@ -496,7 +507,12 @@ final class OfflineTTSManager: ObservableObject {
         // 静音兜底：归一化后峰值仍低于可闻阈值（离线引擎产出空样本/本底噪声等），
         // 视为合成失败，返回 nil 交由调用方回退到系统 AVSpeech，
         // 避免「文件合法但无声」导致整段朗读静默。
-        return Self.isAudibleWAV(normalized) ? normalized : nil
+        if Self.isAudibleWAV(normalized) {
+            DispatchQueue.main.async { self.lastOfflineError = nil }   // 成功即清除历史诊断
+            return normalized
+        }
+        reportOfflineError("\(packId)：引擎产出静音 WAV（峰值低于可闻阈值，该模型在此设备不出声）")
+        return nil
     }
 
     /// 判断 16-bit PCM WAV 是否实质有声（峰值超过可闻阈值）。
@@ -598,7 +614,10 @@ final class OfflineTTSManager: ObservableObject {
             return children.sorted().first
         }
         guard let modelRel = firstFile(matching: { $0.hasSuffix(".onnx") }),
-              let tokensRel = firstFile(matching: { $0.hasSuffix("tokens.txt") }) else { return nil }
+              let tokensRel = firstFile(matching: { $0.hasSuffix("tokens.txt") }) else {
+            reportOfflineError("\(packId)：包内未找到 .onnx 模型或 tokens.txt（包结构不完整）")
+            return nil
+        }
 
         var vits = SherpaOnnxOfflineTtsVitsModelConfig()
         vits.model = UnsafePointer(strdup(dir + "/" + modelRel))
@@ -632,7 +651,10 @@ final class OfflineTTSManager: ObservableObject {
         if !fsts.isEmpty { config.rule_fsts = UnsafePointer(strdup(fsts.joined(separator: ","))) }
         config.max_num_sentences = 2
 
-        guard let tts = SherpaOnnxCreateOfflineTts(&config) else { return nil }
+        guard let tts = SherpaOnnxCreateOfflineTts(&config) else {
+            reportOfflineError("\(packId)：引擎创建失败（模型不兼容或缺少 espeak-ng-data/dict 等资源）")
+            return nil
+        }
         engines[packId] = tts
         return tts
     }

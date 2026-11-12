@@ -105,6 +105,11 @@ struct SettingsView: View {
                     Toggle("启用离线语音包朗读", isOn: $settings.offlineTTSEnabled)
                     Text("下载到手机本地，完全离线合成，优先级高于云端 TTS。模型来自 sherpa-onnx 社区开放模型（国内经 hf-mirror 镜像下载）。")
                         .font(.caption).foregroundColor(.secondary)
+                    if let diag = offlineMgr.lastOfflineError {
+                        Text("⚠️ 离线合成诊断：" + diag)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
                     TextField("男声编号列表（逗号分隔，如 0,3,7）", text: $settings.offlineTTSMaleSIDs)
                         .font(.caption)
                         .autocorrectionDisabled()
