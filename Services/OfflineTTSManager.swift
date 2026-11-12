@@ -119,27 +119,14 @@ final class OfflineTTSManager: ObservableObject {
         return subpaths.contains { ($0 as NSString).lastPathComponent == "tokens.txt" }
     }
 
-    /// 已安装包列表缓存。磁盘扫描较慢，且 AnalysisView 每个角色行渲染都会读一次，
-    /// 不缓存会造成打开角色面板卡顿。安装在下载完成/删除/导入后变化时显式失效。
-    private var installedPacksCache: [VoicePackInfo]?
-    private let packsCacheLock = NSLock()
-
-    /// 安装状态变化后调用：清空缓存，下次读取重新扫描磁盘。
-    private func invalidateInstalledPacks() {
-        packsCacheLock.lock()
-        defer { packsCacheLock.unlock() }
-        installedPacksCache = nil
-    }
-
     /// 磁盘上所有「已安装」的语音包：静态 packs 表内已装的 + 从 zip 导入的自定义包。
     /// 导入包的 id 是压缩包内根文件夹名（任意字符串），不在静态表里，
     /// 因此必须扫描 VoicePacks 目录本身，否则导入包永远选不到、也进不了自动分配池。
+    ///
+    /// 刻意保持为「无锁、无共享可变状态」的纯函数：本方法会在 engineQueue 的
+    /// withCheckedContinuation 合成链路里被 assign() 调用，任何锁/共享缓存都可能让
+    /// 播放后台串行队列挂起，导致整段朗读无声。UI 侧的重复扫描由各视图自行缓存。
     func installedPacks() -> [VoicePackInfo] {
-        packsCacheLock.lock()
-        defer { packsCacheLock.unlock() }
-        if let cached = installedPacksCache {
-            return cached
-        }
         var out: [VoicePackInfo] = []
         var seen = Set<String>()
         for p in Self.packs where isInstalled(p.id) {
@@ -155,7 +142,6 @@ final class OfflineTTSManager: ObservableObject {
                              gender: "导入", sizeMB: 0))
             seen.insert(dir)
         }
-        installedPacksCache = out
         return out
     }
 
@@ -191,7 +177,6 @@ final class OfflineTTSManager: ObservableObject {
                     self.progress[pack.id] = 1
                 }
                 // 下载结束（成功或失败）都刷新一次行的安装状态
-                self.invalidateInstalledPacks()
                 self.revision += 1
             }
         }
@@ -205,7 +190,6 @@ final class OfflineTTSManager: ObservableObject {
         }
         try? fm.removeItem(at: packDir(id))
         // 磁盘已删除，通知 SwiftUI 立即重绘（否则要退出设置页再进入才更新）
-        invalidateInstalledPacks()
         revision += 1
         errors[id] = nil
         progress[id] = nil
@@ -325,7 +309,6 @@ final class OfflineTTSManager: ObservableObject {
             return "压缩包内缺少 tokens.txt，不是有效的语音包"
         }
         // 导入成功：立即刷新语音包列表（安装状态是磁盘查询，需显式触发重绘）
-        invalidateInstalledPacks()
         revision += 1
         errors[id] = nil
         return nil
@@ -374,11 +357,14 @@ final class OfflineTTSManager: ObservableObject {
                                 maleSIDs: [Int32], femaleSIDs: [Int32],
                                 speed: Float) async -> Data? {
         guard !text.isEmpty else { return nil }
+        // 磁盘扫描在进入 engineQueue 之前完成，并把纯值数组带进后台队列；
+        // 后台串行合成队列不做任何文件遍历/锁操作，避免阻塞预取流水线造成无声。
+        let installedIds = installedPacks().map(\.id)
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
                 guard let self else { cont.resume(returning: nil); return }
                 let plan = self.assign(characterId: characterId, gender: gender,
-                                       packGenders: packGenders,
+                                       packGenders: packGenders, installedIds: installedIds,
                                        maleSIDs: maleSIDs, femaleSIDs: femaleSIDs)
                 guard let (packId, sid) = plan, self.isInstalled(packId) else {
                     cont.resume(returning: nil); return
@@ -413,14 +399,13 @@ final class OfflineTTSManager: ObservableObject {
 
     /// 分配：优先单音色性别包池轮转，其次多音色包 + 编号列表轮转。分配结果按角色缓存。
     private func assign(characterId: String, gender: Gender,
-                        packGenders: [String: String],
+                        packGenders: [String: String], installedIds: [String],
                         maleSIDs: [Int32], femaleSIDs: [Int32]) -> (String, Int32)? {
         if let cached = roleAssignments[characterId],
            isInstalled(cached.packId) {
             return (cached.packId, cached.sid)
         }
-        // 用磁盘扫描结果（含 zip 导入的自定义包），而不是只遍历静态 packs 表
-        let installedIds = installedPacks().map(\.id)
+        // installedIds 由调用方在进入后台队列前算好（含 zip 导入的自定义包），这里只做纯内存轮转
         func genderOf(_ id: String) -> String {
             // 用户显式标注优先（"" 表示「不参与」）；未标注的导入包按默认性别参与轮转
             if let g = packGenders[id] { return g }

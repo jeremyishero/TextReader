@@ -111,6 +111,10 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 角色面板手工指定了「系统声」的角色：跳过离线/云端合成，强制走 AVSpeech 的 roleVoices，
     /// 否则离线（优先级更高）会无声覆盖用户的选择。
     var manualSystemVoiceIds: Set<String> = []
+    /// 手工离线包的合成通道。刻意做成「只收值类型参数」的非隔离闭包：
+    /// 闭包体不得捕获 player/settings 等 @MainActor 对象，否则会从播放热路径跨 actor 同步读取，
+    /// 导致预取任务挂起、整段朗读无声。由 ReadingView 在 configurePlayer 里注入。
+    var manualOfflineSynth: ((String, String, Int32, Float) async -> Data?)?
     private var audioPlayer: AVAudioPlayer?
     /// 当前段原始文本（未经规则替换），供异步合成完成后的归属校验
     private var speakingRawText: String?
@@ -481,6 +485,13 @@ final class TTSPlayer: NSObject, ObservableObject {
         // 手工指定「系统声」的角色：跳过离线/云端，让 roleVoices 真正生效
         if !segId.isEmpty, manualSystemVoiceIds.contains(segId) {
             return .utterance(buildUtterance(for: idx, text: processed))
+        }
+        // 手工指定离线包：在 @MainActor 上下文读取映射，合成闭包只接收值类型参数，
+        // 避免 offlineProvider 闭包跨 actor 读取播放器状态造成预取任务挂起。
+        if !segId.isEmpty, let manual = manualOfflinePacks[segId],
+           let synth = manualOfflineSynth,
+           let data = await synth(processed, manual.packId, manual.sid, rate) {
+            return .audio(data, fallback: processed, notice: nil)
         }
         if let offlineProvider, let data = await offlineProvider(processed, gender, segId) {
             return .audio(data, fallback: processed, notice: "离线语音包合成失败，已回退")

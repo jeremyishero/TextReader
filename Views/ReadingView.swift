@@ -500,21 +500,17 @@ struct ReadingView: View {
             guard client.isConfigured else { return nil }
             return try? await client.synthesize(text)
         }
-        // 离线语音包注入（优先于云端）：手工指定 > 旁白专用包 > 按性别池自动轮转
+        // 手工指定离线包的合成通道：闭包只接收值类型参数，不捕获 player/settings。
+        // 具体由 TTSPlayer.buildPrepared 在 @MainActor 上下文按角色查表后调用。
+        player.manualOfflineSynth = { text, packId, sid, speed in
+            guard OfflineTTSManager.shared.isInstalled(packId) else { return nil }
+            return await OfflineTTSManager.shared.synthesizeWithPack(
+                text: text, packId: packId, sid: sid, speed: speed)
+        }
+        // 离线语音包注入（优先于云端）：按角色性别池轮转分配——不同角色配不同声音
         player.offlineProvider = { text, gender, characterId in
-            let manual: (packId: String, sid: Int32)? =
-                characterId.isEmpty ? nil : player.manualOfflinePacks[characterId]
-            // 手工指定是明确意图：即使「启用离线语音包朗读」总开关关闭也照常生效；
-            // 其余情况仍受总开关控制。
-            if manual == nil, !settings.offlineTTSEnabled { return nil }
+            guard settings.offlineTTSEnabled else { return nil }
             let speed = player.rate
-            // 角色面板手工指定的离线包：直连该包 + 编号，绕过性别池自动分配。
-            // 包已被删除时明确返回 nil 回退（不要错误地掉进自动分配池换成别的声音）。
-            if let manual {
-                guard OfflineTTSManager.shared.isInstalled(manual.packId) else { return nil }
-                return await OfflineTTSManager.shared.synthesizeWithPack(
-                    text: text, packId: manual.packId, sid: manual.sid, speed: speed)
-            }
             // 旁白（characterId 为空）且用户指定了离线旁白包 → 直接用该包合成（解决「旁白只能选系统几个声音」）
             if characterId.isEmpty, !settings.narrationOfflinePackId.isEmpty,
                OfflineTTSManager.shared.isInstalled(settings.narrationOfflinePackId) {

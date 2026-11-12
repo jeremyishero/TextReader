@@ -8,6 +8,13 @@ struct SettingsView: View {
     @ObservedObject private var offlineMgr = OfflineTTSManager.shared
     @State private var showPackImporter = false
     @State private var packImportMsg: String? = nil
+    /// 已安装包列表缓存：installedPacks() 是磁盘扫描，Form 多行渲染会反复求值，故只在
+    /// 视图出现 / 安装状态版本变化时刷新一次。
+    @State private var installedPacksSnapshot: [VoicePackInfo] = []
+
+    private func refreshInstalledPacks() {
+        installedPacksSnapshot = offlineMgr.installedPacks()
+    }
 
     private var zhHansVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-CN") }
@@ -21,9 +28,9 @@ struct SettingsView: View {
         AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("en") }
     }
 
-    /// 从 zip 导入的自定义包（id 不在静态 packs 表里），通过磁盘扫描得到。
+    /// 从 zip 导入的自定义包（id 不在静态 packs 表里）。
     private var importedPacks: [VoicePackInfo] {
-        offlineMgr.installedPacks().filter { p in
+        installedPacksSnapshot.filter { p in
             !OfflineTTSManager.packs.contains { $0.id == p.id }
         }
     }
@@ -51,7 +58,7 @@ struct SettingsView: View {
                     Picker("旁白离线语音包", selection: $settings.narrationOfflinePackId) {
                         Text("系统默认声（当前旁白）").tag("")
                         // 用磁盘扫描结果：下载包 + zip 导入的自定义包都能选
-                        ForEach(offlineMgr.installedPacks()) { pack in
+                        ForEach(installedPacksSnapshot) { pack in
                             Text(pack.displayName).tag(pack.id)
                         }
                     }
@@ -166,6 +173,8 @@ struct SettingsView: View {
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
+            .task { refreshInstalledPacks() }
+            .onChange(of: offlineMgr.revision) { _ in refreshInstalledPacks() }
             .fileImporter(
                 isPresented: $showPackImporter,
                 allowedContentTypes: [UTType(filenameExtension: "zip") ?? .zip, .data],

@@ -99,8 +99,11 @@ struct AnalysisView: View {
         let name: String
     }
 
-    /// 已下载 / 已导入的离线包选项。导入包通过扫描磁盘纳入（不在静态 packs 表里）。
-    private var offlineVoiceOptions: [VoiceOption] {
+    /// 已下载 / 已导入的离线包选项。installedPacks() 是磁盘扫描，
+    /// 故缓存到 @State，仅在视图出现或安装状态版本变化时刷新，避免角色行反复求值全量扫盘。
+    @State private var offlineVoiceOptions: [VoiceOption] = []
+
+    private func refreshOfflineVoiceOptions() {
         var out: [VoiceOption] = []
         for pack in offlineMgr.installedPacks() {
             let annotated = settings.offlinePackGenders[pack.id]
@@ -121,7 +124,7 @@ struct AnalysisView: View {
                                  name: "离线｜" + pack.displayName + suffix))
             }
         }
-        return out
+        offlineVoiceOptions = out
     }
 
     /// 前 10 个角色可单独指定声音
@@ -162,6 +165,8 @@ struct AnalysisView: View {
             }
             .navigationTitle("解析结果")
             .navigationBarTitleDisplayMode(.inline)
+            .task { refreshOfflineVoiceOptions() }
+            .onChange(of: offlineMgr.revision) { _ in refreshOfflineVoiceOptions() }
             .sheet(isPresented: $showEditSheet) {
                 editRoleSheet
             }
