@@ -13,6 +13,9 @@ import UniformTypeIdentifiers
 /// - 规则：自定义朗读规则（≤20 条），朗读时把「匹配文本」替换为「替换文本」。
 /// 黑/白名单添加时查重：已存在于另一名单则提示「覆盖」或「取消」。
 struct AnalysisView: View {
+    @EnvironmentObject var settings: AppSettings
+    @ObservedObject private var offlineMgr = OfflineTTSManager.shared
+
     @Binding var analysis: AnalysisResult
     var blacklisted: [String]
     var whitelisted: [String]
@@ -89,6 +92,38 @@ struct AnalysisView: View {
         return Array(pool.prefix(10))
     }()
     private var voiceOptions: [AVSpeechSynthesisVoice] { Self.cachedVoiceOptions }
+
+    /// 统一的「可选声音」：值为存入 voiceOverrides 的字符串（系统声 identifier 或 offline:<packId>:<sid>）。
+    private struct VoiceOption: Identifiable {
+        let id: String
+        let name: String
+    }
+
+    /// 已下载 / 已导入的离线包选项。导入包通过扫描磁盘纳入（不在静态 packs 表里）。
+    private var offlineVoiceOptions: [VoiceOption] {
+        var out: [VoiceOption] = []
+        for pack in offlineMgr.installedPacks() {
+            let annotated = settings.offlinePackGenders[pack.id]
+            let isMulti = (annotated == "multi")
+                || (annotated == nil && OfflineTTSManager.defaultGender(for: pack.id) == "multi")
+            let sidList: [Int32] = {
+                guard isMulti else { return [0] }
+                let raw = settings.offlineTTSMaleSIDs + "," + settings.offlineTTSFemaleSIDs
+                var seen = Set<Int32>()
+                let ids = raw.split(separator: ",")
+                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                    .filter { seen.insert($0).inserted }
+                return ids.isEmpty ? [0] : ids
+            }()
+            for sid in sidList {
+                let suffix = isMulti ? " · #\(sid)" : ""
+                out.append(.init(id: VoiceChoice.encode(packId: pack.id, sid: sid),
+                                 name: "离线｜" + pack.displayName + suffix))
+            }
+        }
+        return out
+    }
+
     /// 前 10 个角色可单独指定声音
     private var assignableRoles: [CharacterRole] {
         Array(analysis.roles.prefix(10))
@@ -446,13 +481,18 @@ struct AnalysisView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
-            // 前 10 个角色可单独选择声音（多选模式下隐藏，系统声音不足 10 个则有几个设几个）
-            if !multiSelectMode, index < 10, !voiceOptions.isEmpty {
+            // 前 10 个角色可单独选择声音（多选模式下隐藏）
+            // 数据源 = 系统声 + 已下载/已导入的离线包，二者统一编码进 voiceOverrides
+            if !multiSelectMode, index < 10,
+               !voiceOptions.isEmpty || !offlineVoiceOptions.isEmpty {
                 HStack(spacing: 8) {
                     Picker("声音", selection: voiceBinding(for: role)) {
                         Text("自动分配").tag(String?.none)
                         ForEach(voiceOptions, id: \.identifier) { v in
                             Text(v.name).tag(String?.some(v.identifier))
+                        }
+                        ForEach(offlineVoiceOptions) { opt in
+                            Text(opt.name).tag(String?.some(opt.id))
                         }
                     }
                     .font(.caption)
@@ -739,9 +779,43 @@ struct AnalysisView: View {
         )
     }
 
-    /// 预听该角色当前生效的声音（手动指定 → 自动分配，含性别音高补偿），说「你好，我是中国人」。
+    /// 预听该角色当前生效的声音：手动指定离线包 → 离线合成试听；系统声/自动分配 → AVSpeech 试听。
     private func previewVoice(for role: CharacterRole) {
-        let identifier = voiceOverrides[role.canonicalName]
+        let chosen = voiceOverrides[role.canonicalName]
+        // 手工选了离线包：直接用该包 + 编号合成一句试听，走 VoicePreviewer 的音频播放通道
+        if let chosen, let offline = VoiceChoice.decode(chosen) {
+            Task { @MainActor in
+                if let wav = await offlineMgr.synthesizePreview(
+                    text: "你好，我是中国人",
+                    packId: offline.packId, sid: offline.sid, speed: 1.0) {
+                    VoicePreviewer.shared.playAudio(wav)
+                }
+            }
+            return
+        }
+        // 自动分配时若离线朗读已启用，也预听实际会用的离线音色（按性别池分配）
+        if chosen == nil, settings.offlineTTSEnabled {
+            Task { @MainActor in
+                let maleSIDs = settings.offlineTTSMaleSIDs.split(separator: ",")
+                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                let femaleSIDs = settings.offlineTTSFemaleSIDs.split(separator: ",")
+                    .compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+                if let wav = await offlineMgr.synthesizeForCharacter(
+                    text: "你好，我是中国人", characterId: "preview_\(role.id)",
+                    gender: role.gender, packGenders: settings.offlinePackGenders,
+                    maleSIDs: maleSIDs, femaleSIDs: femaleSIDs, speed: 1.0) {
+                    VoicePreviewer.shared.playAudio(wav)
+                    return
+                }
+                previewSystemVoice(for: role, chosen: nil)
+            }
+            return
+        }
+        previewSystemVoice(for: role, chosen: chosen)
+    }
+
+    private func previewSystemVoice(for role: CharacterRole, chosen: String?) {
+        let identifier = chosen
             ?? TTSPlayer.assignVoicesAndPitches(roles: [role]).voices[role.id]?.identifier
         let voice = identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
         let pitch = TTSPlayer.assignVoicesAndPitches(roles: [role]).pitches[role.id] ?? 1.0

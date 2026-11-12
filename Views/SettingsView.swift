@@ -21,6 +21,13 @@ struct SettingsView: View {
         AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("en") }
     }
 
+    /// 从 zip 导入的自定义包（id 不在静态 packs 表里），通过磁盘扫描得到。
+    private var importedPacks: [VoicePackInfo] {
+        offlineMgr.installedPacks().filter { p in
+            !OfflineTTSManager.packs.contains { $0.id == p.id }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -43,7 +50,8 @@ struct SettingsView: View {
                 Section {
                     Picker("旁白离线语音包", selection: $settings.narrationOfflinePackId) {
                         Text("系统默认声（当前旁白）").tag("")
-                        ForEach(OfflineTTSManager.packs.filter { offlineMgr.isInstalled($0.id) }) { pack in
+                        // 用磁盘扫描结果：下载包 + zip 导入的自定义包都能选
+                        ForEach(offlineMgr.installedPacks()) { pack in
                             Text(pack.displayName).tag(pack.id)
                         }
                     }
@@ -104,6 +112,15 @@ struct SettingsView: View {
                         .font(.caption2).foregroundColor(.secondary)
                     ForEach(OfflineTTSManager.packs) { pack in
                         packRow(pack)
+                    }
+                    // zip 导入的自定义包（id 不在静态表里）：单独列出，可标注性别/试听/设旁白/删除
+                    if !importedPacks.isEmpty {
+                        Text("已导入的语音包")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ForEach(importedPacks) { pack in
+                            packRow(pack)
+                        }
                     }
                     Button {
                         showPackImporter = true
@@ -222,13 +239,17 @@ struct SettingsView: View {
                             .cornerRadius(4)
                     }
                 }
-                Text("\(pack.gender) · 约 \(pack.sizeMB)MB")
+                Text(pack.repo.isEmpty
+                     ? "\(pack.gender) · 从 zip 导入"
+                     : "\(pack.gender) · 约 \(pack.sizeMB)MB")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 // 性别标注：决定该包进入哪个性别池（女声池/男声池/中性声池/多音色）
                 if installed {
                     Picker("性别标注", selection: Binding(
-                        get: { settings.offlinePackGenders[pack.id] ?? "" },
+                        // 未标注的包（尤其 zip 导入包）显示其自动分配时的默认性别，避免 UI 与实行为不一致
+                        get: { settings.offlinePackGenders[pack.id]
+                               ?? OfflineTTSManager.defaultGender(for: pack.id) },
                         set: { newValue in
                             settings.offlinePackGenders[pack.id] = newValue
                             offlineMgr.resetAssignments()
@@ -315,7 +336,7 @@ struct SettingsView: View {
         if let err = offlineMgr.importPackZip(from: url) {
             packImportMsg = "导入失败：" + err
         } else {
-            packImportMsg = "导入成功！点该语音包行的「使用」即可启用。"
+            packImportMsg = "导入成功！可在下方「已导入的语音包」标注性别（进入自动分配池）、选作旁白，或到「解析结果 → 角色」里给指定角色单独选用。"
         }
     }
 

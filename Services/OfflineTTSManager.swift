@@ -14,6 +14,31 @@ struct VoicePackInfo: Identifiable, Equatable {
     let sizeMB: Int
 }
 
+/// 角色声音选择的统一编码。
+/// voiceOverrides 历史值是「系统声 identifier」（无前缀），新增的离线包用 "offline:<packId>:<sid>"。
+/// 旧配置无需迁移：无前缀即按系统声解析，天然兼容。
+enum VoiceChoice {
+    static let offlinePrefix = "offline:"
+
+    static func encode(packId: String, sid: Int32) -> String {
+        "\(offlinePrefix)\(packId):\(sid)"
+    }
+
+    /// 解析离线选择；返回 nil 表示「系统声 identifier」或未识别的旧值。
+    static func decode(_ raw: String) -> (packId: String, sid: Int32)? {
+        guard raw.hasPrefix(offlinePrefix) else { return nil }
+        let body = String(raw.dropFirst(offlinePrefix.count))
+        // 从末尾切分，兼容 packId 内含冒号的极端情况
+        guard let colon = body.lastIndex(of: ":") else { return nil }
+        let packId = String(body[..<colon])
+        let sid = Int32(String(body[body.index(after: colon)...])) ?? 0
+        guard !packId.isEmpty else { return nil }
+        return (packId, sid)
+    }
+
+    static func isOffline(_ raw: String) -> Bool { raw.hasPrefix(offlinePrefix) }
+}
+
 /// 离线 TTS 管理器：
 /// - 下载：查询 hf-mirror API 拿文件清单，逐文件下载到 Documents/VoicePacks/<id>/（保留相对路径）；
 /// - 合成：SherpaOnnx C API 加载 VITS 模型 → generate → 内存写 WAV → Data 交给播放器。
@@ -94,6 +119,56 @@ final class OfflineTTSManager: ObservableObject {
         return subpaths.contains { ($0 as NSString).lastPathComponent == "tokens.txt" }
     }
 
+    /// 已安装包列表缓存。磁盘扫描较慢，且 AnalysisView 每个角色行渲染都会读一次，
+    /// 不缓存会造成打开角色面板卡顿。安装在下载完成/删除/导入后变化时显式失效。
+    private var installedPacksCache: [VoicePackInfo]?
+    private let packsCacheLock = NSLock()
+
+    /// 安装状态变化后调用：清空缓存，下次读取重新扫描磁盘。
+    private func invalidateInstalledPacks() {
+        packsCacheLock.lock()
+        defer { packsCacheLock.unlock() }
+        installedPacksCache = nil
+    }
+
+    /// 磁盘上所有「已安装」的语音包：静态 packs 表内已装的 + 从 zip 导入的自定义包。
+    /// 导入包的 id 是压缩包内根文件夹名（任意字符串），不在静态表里，
+    /// 因此必须扫描 VoicePacks 目录本身，否则导入包永远选不到、也进不了自动分配池。
+    func installedPacks() -> [VoicePackInfo] {
+        packsCacheLock.lock()
+        defer { packsCacheLock.unlock() }
+        if let cached = installedPacksCache {
+            return cached
+        }
+        var out: [VoicePackInfo] = []
+        var seen = Set<String>()
+        for p in Self.packs where isInstalled(p.id) {
+            out.append(p)
+            seen.insert(p.id)
+        }
+        let dirs = (try? fm.contentsOfDirectory(atPath: packsRoot.path)) ?? []
+        for dir in dirs where !seen.contains(dir) {
+            // 跳过下载过程可能残留的非目录项；isInstalled 已隐含目录校验
+            guard isInstalled(dir) else { continue }
+            out.append(.init(id: dir, repo: "",
+                             displayName: dir + " · 导入包",
+                             gender: "导入", sizeMB: 0))
+            seen.insert(dir)
+        }
+        installedPacksCache = out
+        return out
+    }
+
+    /// 未标注性别的包用于自动分配时的兜底（导入包默认按中性参与轮转，保证「导入即可用」）。
+    static func defaultGender(for packId: String) -> String {
+        if let p = packs.first(where: { $0.id == packId }) {
+            if p.gender.contains("女") { return "female" }
+            if p.gender.contains("男") { return "male" }
+            if p.gender.contains("多音色") { return "multi" }
+        }
+        return "neutral"
+    }
+
     // MARK: 下载
 
     func download(_ pack: VoicePackInfo) {
@@ -116,6 +191,7 @@ final class OfflineTTSManager: ObservableObject {
                     self.progress[pack.id] = 1
                 }
                 // 下载结束（成功或失败）都刷新一次行的安装状态
+                self.invalidateInstalledPacks()
                 self.revision += 1
             }
         }
@@ -129,6 +205,7 @@ final class OfflineTTSManager: ObservableObject {
         }
         try? fm.removeItem(at: packDir(id))
         // 磁盘已删除，通知 SwiftUI 立即重绘（否则要退出设置页再进入才更新）
+        invalidateInstalledPacks()
         revision += 1
         errors[id] = nil
         progress[id] = nil
@@ -248,6 +325,7 @@ final class OfflineTTSManager: ObservableObject {
             return "压缩包内缺少 tokens.txt，不是有效的语音包"
         }
         // 导入成功：立即刷新语音包列表（安装状态是磁盘查询，需显式触发重绘）
+        invalidateInstalledPacks()
         revision += 1
         errors[id] = nil
         return nil
@@ -338,13 +416,18 @@ final class OfflineTTSManager: ObservableObject {
                         packGenders: [String: String],
                         maleSIDs: [Int32], femaleSIDs: [Int32]) -> (String, Int32)? {
         if let cached = roleAssignments[characterId],
-           isInstalled(cached.packId),
-           packGenders[cached.packId] != nil {
+           isInstalled(cached.packId) {
             return (cached.packId, cached.sid)
         }
-        let installedIds = Self.packs.map { $0.id }.filter { isInstalled($0) }
+        // 用磁盘扫描结果（含 zip 导入的自定义包），而不是只遍历静态 packs 表
+        let installedIds = installedPacks().map(\.id)
+        func genderOf(_ id: String) -> String {
+            // 用户显式标注优先（"" 表示「不参与」）；未标注的导入包按默认性别参与轮转
+            if let g = packGenders[id] { return g }
+            return Self.defaultGender(for: id)
+        }
         func pool(_ g: String) -> [String] {
-            installedIds.filter { packGenders[$0] == g }
+            installedIds.filter { genderOf($0) == g }
         }
         let femalePacks = pool("female")
         let malePacks = pool("male")

@@ -105,6 +105,12 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
     var offlineProvider: ((String, Gender, String) async -> Data?)?
     var cloudProvider: ((String) async -> Data?)?
+
+    /// 角色面板手工指定的离线包：characterId → (packId, sid)。命中时绕过性别池自动分配。
+    var manualOfflinePacks: [String: (packId: String, sid: Int32)] = [:]
+    /// 角色面板手工指定了「系统声」的角色：跳过离线/云端合成，强制走 AVSpeech 的 roleVoices，
+    /// 否则离线（优先级更高）会无声覆盖用户的选择。
+    var manualSystemVoiceIds: Set<String> = []
     private var audioPlayer: AVAudioPlayer?
     /// 当前段原始文本（未经规则替换），供异步合成完成后的归属校验
     private var speakingRawText: String?
@@ -472,6 +478,10 @@ final class TTSPlayer: NSObject, ObservableObject {
             gender = .neutral
         }
         let processed = applyCustomRules(text)
+        // 手工指定「系统声」的角色：跳过离线/云端，让 roleVoices 真正生效
+        if !segId.isEmpty, manualSystemVoiceIds.contains(segId) {
+            return .utterance(buildUtterance(for: idx, text: processed))
+        }
         if let offlineProvider, let data = await offlineProvider(processed, gender, segId) {
             return .audio(data, fallback: processed, notice: "离线语音包合成失败，已回退")
         }

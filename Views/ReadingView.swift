@@ -170,6 +170,8 @@ struct ReadingView: View {
                         player.customRules = rules   // 朗读中即时生效
                     }
                 )
+                // AnalysisView 新增了 @EnvironmentObject settings；sheet 内显式注入，避免环境对象未传播时崩溃
+                .environmentObject(settings)
             }
         }
         .confirmationDialog(
@@ -498,10 +500,21 @@ struct ReadingView: View {
             guard client.isConfigured else { return nil }
             return try? await client.synthesize(text)
         }
-        // 离线语音包注入（优先于云端）：按角色性别池轮转分配——不同角色配不同声音
+        // 离线语音包注入（优先于云端）：手工指定 > 旁白专用包 > 按性别池自动轮转
         player.offlineProvider = { text, gender, characterId in
-            guard settings.offlineTTSEnabled else { return nil }
+            let manual: (packId: String, sid: Int32)? =
+                characterId.isEmpty ? nil : player.manualOfflinePacks[characterId]
+            // 手工指定是明确意图：即使「启用离线语音包朗读」总开关关闭也照常生效；
+            // 其余情况仍受总开关控制。
+            if manual == nil, !settings.offlineTTSEnabled { return nil }
             let speed = player.rate
+            // 角色面板手工指定的离线包：直连该包 + 编号，绕过性别池自动分配。
+            // 包已被删除时明确返回 nil 回退（不要错误地掉进自动分配池换成别的声音）。
+            if let manual {
+                guard OfflineTTSManager.shared.isInstalled(manual.packId) else { return nil }
+                return await OfflineTTSManager.shared.synthesizeWithPack(
+                    text: text, packId: manual.packId, sid: manual.sid, speed: speed)
+            }
             // 旁白（characterId 为空）且用户指定了离线旁白包 → 直接用该包合成（解决「旁白只能选系统几个声音」）
             if characterId.isEmpty, !settings.narrationOfflinePackId.isEmpty,
                OfflineTTSManager.shared.isInstalled(settings.narrationOfflinePackId) {
@@ -556,6 +569,10 @@ struct ReadingView: View {
         player.setDefaultVoice(defaultVoice)
         player.setLanguageVoices(languageVoices(defaultVoice: defaultVoice))
 
+        // 每次起播都重建手工指定映射，避免换文档/关闭分声后残留上一本的配置
+        player.manualOfflinePacks = [:]
+        player.manualSystemVoiceIds = []
+
         let saved = currentProgress
         // 模式优先级：Banner 显式指定的保存模式 > 无起点时按进度里的模式 > 目录 ▶︎ 等显式起点按当前开关
         if let explicitMode = pendingStartAnalyzed {
@@ -591,6 +608,23 @@ struct ReadingView: View {
         let cloud = cloudEnabled
 
         if canAnalyze, let a = analysis {
+            // 把「角色称呼 → 声音选择」按 role.id 拆成两条通道：
+            //   ① 离线包编码 → manualOfflinePacks（offlineProvider 直连该包）
+            //   ② 系统声 identifier → roleVoices + manualSystemVoiceIds（跳过离线/云端）
+            // 未指定的角色保持自动分配。
+            var manualOffline: [String: (packId: String, sid: Int32)] = [:]
+            var manualSystem: Set<String> = []
+            for role in a.roles {
+                guard let choice = voiceOverrides[role.canonicalName] else { continue }
+                if let offline = VoiceChoice.decode(choice) {
+                    manualOffline[role.id] = offline
+                } else if AVSpeechSynthesisVoice(identifier: choice) != nil {
+                    manualSystem.insert(role.id)
+                }
+            }
+            player.manualOfflinePacks = manualOffline
+            player.manualSystemVoiceIds = manualSystem
+
             // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
             let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)
             var map: [String: AVSpeechSynthesisVoice] = [:]
