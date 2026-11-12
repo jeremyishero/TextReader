@@ -503,7 +503,7 @@ final class OfflineTTSManager: ObservableObject {
     /// 非 16-bit PCM（如 float32）或解析失败的 WAV 一律视为有声，避免误丢弃合法音频。
     private static func isAudibleWAV(_ data: Data) -> Bool {
         guard data.count > 44,
-              data[0] == 0x52, data[1] == 0x49, data[2] == 0x52, data[3] == 0x46,
+              data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,
               data[8] == 0x57, data[9] == 0x41, data[10] == 0x56, data[11] == 0x45 else { return true }
         let bits = Int(data[34]) | (Int(data[35]) << 8)
         guard bits == 16 else { return true }
