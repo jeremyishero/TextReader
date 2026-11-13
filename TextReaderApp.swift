@@ -69,16 +69,19 @@ enum CrashReporter {
             CrashReporter.appendText(msg)
         }
 
-        let pairs: [(Int32, String)] = [
-            (SIGTRAP, "SIGTRAP"),
-            (SIGABRT, "SIGABRT"),
-            (SIGSEGV, "SIGSEGV"),
-            (SIGBUS, "SIGBUS"),
-            (SIGILL, "SIGILL"),
-            (SIGFPE, "SIGFPE"),
-        ]
-        for (sig, name) in pairs {
+        let signals: [Int32] = [SIGTRAP, SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE]
+        for sig in signals {
             signal(sig) { signum in
+                var name = "SIG#\(signum)"
+                switch signum {
+                case SIGTRAP: name = "SIGTRAP"
+                case SIGABRT: name = "SIGABRT"
+                case SIGSEGV: name = "SIGSEGV"
+                case SIGBUS: name = "SIGBUS"
+                case SIGILL: name = "SIGILL"
+                case SIGFPE: name = "SIGFPE"
+                default: break
+                }
                 CrashReporter.writeSignal(signum, name)
                 signal(signum, SIG_DFL)
                 raise(signum)
