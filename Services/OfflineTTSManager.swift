@@ -641,6 +641,10 @@ final class OfflineTTSManager: ObservableObject {
         let sampleCount = dataSize / 2
         guard sampleCount > 0 else { return data }
 
+        // 采样率（WAV fmt 块偏移 24 起的 4 字节小端 uint32），用于按时间窗做段内响度均衡
+        let sr = Int(data[24]) | (Int(data[25]) << 8) | (Int(data[26]) << 16) | (Int(data[27]) << 24)
+        guard sr > 0 else { return data }
+
         let slice = data.subdata(in: dataOffset..<dataOffset + dataSize)
         let samples = slice.withUnsafeBytes { raw in
             Array(raw.bindMemory(to: Int16.self))
@@ -693,11 +697,15 @@ final class OfflineTTSManager: ObservableObject {
         }
         guard scale.isFinite, scale > 0 else { return data }
 
-        let out = samples.map { s -> Int16 in
+        var out = samples.map { s -> Int16 in
             // 四舍五入而非截断：小数样本截断会产生直流偏置与低幅细节丢失
             let v = (Double(s) * scale).rounded()
             return Int16(max(Double(Int16.min), min(Double(Int16.max), v)))
         }
+        // 段内响度均衡：压平单句「句首响、句尾弱」的包络，使一句话前后响度一致。
+        // 这是「读着读着前大后小」的根因——VITS 逐句（逐 chunk）合成的包络起伏，
+        // 整段 RMS 归一化只能对齐「段与段」，无法消除「段内」的起伏，必须由时间可变增益（AGC）来压平。
+        out = Self.flattenEnvelope(out, sampleRate: sr)
         // 防护：归一化只能「调整响度」，绝不允许把有声输入变成静音。
         // 若输出峰值反而低于可闻阈值（缩放算错/精度问题），原样返回未归一化数据，
         // 宁可响度不均，也不能让整段朗读变无声。
@@ -711,6 +719,70 @@ final class OfflineTTSManager: ObservableObject {
         let newData = out.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
         result.replaceSubrange(dataOffset..<dataOffset + dataSize, with: newData)
         return result
+    }
+
+    /// 段内响度均衡（轻量 AGC）：用约 30ms 的滑动窗估计每帧能量，
+    /// 再以指数平滑得到随时间渐变的增益，使单句/单段内各处的响度趋于一致，
+    /// 解决 VITS 常见的「句首响、句尾弱」造成的「一句话前面大后面小」。
+    /// - 不改变整段总体响度基准（normalizeWAV 已把整段 RMS 对齐到目标，句间响度一致）；
+    /// - 仅压平段内局部起伏；静音段让增益向中性缓慢回退，不放大呼吸/本底噪声。
+    /// - 增益限幅 ±6dB（0.5×~2.0×），避免过冲产生失真或可闻 pumping。
+    private static func flattenEnvelope(_ samples: [Int16], sampleRate sr: Int) -> [Int16] {
+        let n = samples.count
+        guard n > 0, sr > 0 else { return samples }
+        let frame = max(1, Int(Double(sr) * 0.03))   // 约 30ms 一帧
+        let numFrames = max(1, n / frame)
+
+        // 逐帧能量（平方均值），静音段能量很低
+        var frameEnergy = [Double](repeating: 0, count: numFrames)
+        for f in 0..<numFrames {
+            let lo = f * frame
+            let hi = min(n, lo + frame)
+            var acc = 0.0
+            for i in lo..<hi {
+                let v = Double(samples[i])
+                acc += v * v
+            }
+            frameEnergy[f] = acc / Double(hi - lo)
+        }
+
+        // 仅用「有声帧」（能量高于本底门限）估计基准能量，取中位数抗离群
+        let silenceE: Double = 50.0
+        let voiced = frameEnergy.filter { $0 > silenceE }
+        guard !voiced.isEmpty else { return samples }   // 全静音：不处理
+        let sorted = voiced.sorted()
+        let refE = sorted[sorted.count / 2]
+
+        // 指数平滑能量包络：有声帧跟随真实能量；静音帧向基准缓慢回退（不放大静音）
+        let alpha = 0.6
+        var smooth = [Double](repeating: refE, count: numFrames)
+        for f in 0..<numFrames {
+            if frameEnergy[f] > silenceE {
+                smooth[f] = (f == 0) ? frameEnergy[f] : alpha * smooth[f - 1] + (1 - alpha) * frameEnergy[f]
+            } else {
+                smooth[f] = alpha * smooth[f - 1] + (1 - alpha) * refE
+            }
+        }
+
+        // 每帧目标增益 = 基准能量 / 平滑能量，限幅 ±6dB；插值到逐样本后应用
+        var frameGain = [Double](repeating: 1.0, count: numFrames)
+        for f in 0..<numFrames {
+            let e = max(smooth[f], 1.0)
+            var g = refE / e
+            g = min(max(g, 0.5), 2.0)
+            frameGain[f] = g
+        }
+        var out = [Int16](repeating: 0, count: n)
+        for i in 0..<n {
+            let fp = Double(i) / Double(frame)
+            let f0 = min(numFrames - 1, Int(fp))
+            let f1 = min(numFrames - 1, f0 + 1)
+            let t = fp - Double(f0)
+            let g = frameGain[f0] * (1 - t) + frameGain[f1] * t
+            let v = Double(samples[i]) * g
+            out[i] = Int16(max(Double(Int16.min), min(Double(Int16.max), v.rounded())))
+        }
+        return out
     }
 
     /// 从包目录探测文件布局（兼容 piper / hf-theresa / icefall-aishell3 等不同结构）并加载引擎。

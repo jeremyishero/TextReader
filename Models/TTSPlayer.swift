@@ -135,6 +135,12 @@ final class TTSPlayer: NSObject, ObservableObject {
     // 全局播放条共享状态（App 各界面共用同一个 player 实例）
     @Published var useAnalyzedPlayback: Bool = false   // 角色分声开关（阅读页与全局播放条共享）
     @Published var activeTitle: String? = nil           // 当前正在朗读的文档标题（播放条显示）
+    /// 当前已装载/正在朗读的文档 id（UUID 字符串）；nil 表示没有任何书装载。
+    /// 用于判断「正在播放的是不是当前这本书」，从而决定阅读页底部控制条只显示「播放本书」还是完整控制。
+    @Published var currentDocumentId: String? = nil
+    /// 当前正在显示的阅读页所属文档 id（由 ReadingView 在 onAppear/onDisappear 维护）；
+    /// nil 表示当前不在任何阅读页（如主界面/文档列表）。
+    @Published var readingViewBookId: String? = nil
     /// 由 ReadingView 注入：从指定段索引开始朗读（nil = 从头）；全局播放条在尚无内容时调用它
     var startPlaybackHandler: ((Int?) -> Void)?
     /// 由 ReadingView 注入：打开章节目录
@@ -331,6 +337,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         audioPlayer?.stop()
         synth.stopSpeaking(at: .immediate)
         audioPlayer = nil
+        currentDocumentId = nil   // 停止即结束本次播放会话，当前书标记清空
         isPlaying = false
         // 清空已装载内容：停止即结束本次播放会话，让 isLoaded 归 false。
         // 否则播放条会显示「继续」并走 resume()，而此时已无内容可续（既不会重播、也跳不到断点）。

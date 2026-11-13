@@ -189,7 +189,10 @@ struct ReadingView: View {
         .task { loadText() }
         .onAppear {
             configurePlayer()
-            player.activeTitle = item.name
+            // 仅记录「当前显示的是哪本书的阅读页」，不再在这里改写 activeTitle——
+            // 否则只是「看一眼」另一本在播的书，底部的播放条标题就会被改成这本书，
+            // 造成「好像在读这本书」的错觉。activeTitle 只在真正起播本书时才设置。
+            player.readingViewBookId = item.id.uuidString
             player.openTOCHandler = { showTOC = true }
             player.startPlaybackHandler = { idx in self.startPlayback(from: idx) }
         }
@@ -208,6 +211,8 @@ struct ReadingView: View {
             player.onCloudFallback = nil
             player.startPlaybackHandler = nil
             player.openTOCHandler = nil
+            // 离开阅读页时清掉「当前显示的书」标记；仅当仍指向本书时才清，避免覆盖新页面的设置
+            if player.readingViewBookId == item.id.uuidString { player.readingViewBookId = nil }
         }
     }
 
@@ -600,6 +605,12 @@ struct ReadingView: View {
             start = mapped
         }
         start = max(0, min(start, total - 1))   // 索引范围校验，杜绝越界被静默钳到末尾
+
+        // 真正起播本书时才更新「当前在朗读的标题 / 文档 id」——
+        // 这样底部控制条只在本书确实是当前朗读对象时才显示完整控制，
+        // 否则（别的书在播、只是切进来看一眼）只显示「播放本书」。
+        player.activeTitle = item.name
+        player.currentDocumentId = item.id.uuidString
 
         let cloud = cloudEnabled
 
