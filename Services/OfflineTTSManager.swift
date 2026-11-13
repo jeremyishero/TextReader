@@ -61,6 +61,27 @@ final class OfflineTTSManager: ObservableObject {
         DispatchQueue.main.async { self.lastOfflineError = msg }
     }
 
+    /// 熔断名单：某包一旦合成失败（静音/0 样本），后续直接返回 nil 不再进引擎。
+    /// 目的：避免每个预取任务都去等一次「加载 115MB 模型 + 推理 + 仍无结果」，
+    /// 把 4 路预取流水线拖死（用户表现为「听着听着就停了」）。
+    private var failedPacks: Set<String> = []
+
+    /// 清空熔断名单（设置页「清除故障并重试」或性别标注变更后调用）
+    func resetOfflineFailures() {
+        engineQueue.async { [weak self] in
+            self?.failedPacks.removeAll()
+        }
+    }
+
+    /// 引擎与 onnxruntime 版本（诊断用）
+    private static var engineVersions: String {
+        let v = SherpaOnnxGetVersionStr()
+        let o = SherpaOnnxGetOnnxruntimeVersionStr()
+        let vs = v != nil ? String(cString: v!) : "?"
+        let os = o != nil ? String(cString: o!) : "?"
+        return "sherpa \(vs) / ort \(os)"
+    }
+
     /// 大文件下载专用会话：请求/资源超时放宽，避免 115MB 模型被默认 60s 超时掐断
     private static let session: URLSession = {
         let cfg = URLSessionConfiguration.default
@@ -193,9 +214,14 @@ final class OfflineTTSManager: ObservableObject {
 
     func deletePack(_ id: String) {
         engineQueue.sync {
-            if let tts = engines.removeValue(forKey: id) {
-                SherpaOnnxDestroyOfflineTts(tts)
+            // 先取快照再删，避免遍历字典键的同时修改字典
+            let keys = engines.keys.filter { $0 == id || $0 == id + "#nofst" }
+            for key in keys {
+                if let tts = engines.removeValue(forKey: key) {
+                    SherpaOnnxDestroyOfflineTts(tts)
+                }
             }
+            failedPacks.remove(id)
         }
         try? fm.removeItem(at: packDir(id))
         // 磁盘已删除，通知 SwiftUI 立即重绘（否则要退出设置页再进入才更新）
@@ -344,11 +370,7 @@ final class OfflineTTSManager: ObservableObject {
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
                 guard let self else { cont.resume(returning: nil); return }
-                guard let tts = self.loadEngine(packId: packId, dir: dir) else {
-                    cont.resume(returning: nil); return
-                }
-                let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
-                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed)
+                let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
                 cont.resume(returning: data)
             }
         }
@@ -380,10 +402,7 @@ final class OfflineTTSManager: ObservableObject {
                     cont.resume(returning: nil); return
                 }
                 let dir = self.packDir(packId).path
-                guard let tts = self.loadEngine(packId: packId, dir: dir) else {
-                    cont.resume(returning: nil); return
-                }
-                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: sid, speed: speed)
+                let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
                 cont.resume(returning: data)
             }
         }
@@ -397,14 +416,37 @@ final class OfflineTTSManager: ObservableObject {
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
                 guard let self else { cont.resume(returning: nil); return }
-                guard let tts = self.loadEngine(packId: packId, dir: dir) else {
-                    cont.resume(returning: nil); return
-                }
-                let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
-                let data = self.engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed)
+                let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
                 cont.resume(returning: data)
             }
         }
+    }
+
+    /// 在指定包上合成，带「去 rule_fsts 重试 + 熔断」：
+    /// 1) 先用带 rule_fsts 的引擎合成；
+    /// 2) 若产出静音/0 样本，换一个不带 rule_fsts 的引擎再试一次
+    ///    （中文归一化 FST 与模型不兼容时会把文本归一成空串，表现为 n>0 但样本全零）；
+    /// 3) 两者都失败 → 该包加入熔断名单，后续直接返回 nil，避免拖死 4 路预取流水线。
+    private func synthWithFallback(text: String, packId: String, dir: String, sid: Int32, speed: Float) -> Data? {
+        if failedPacks.contains(packId) {
+            reportOfflineError("\(packId)：此前合成失败已熔断，本次直接回退系统声（可点「清除故障并重试」）")
+            return nil
+        }
+        guard let tts = loadEngine(packId: packId, dir: dir) else { return nil }
+        let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
+        if let d = engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed) {
+            failedPacks.remove(packId)
+            return d
+        }
+        if let alt = loadEngine(packId: packId, dir: dir, useRuleFsts: false) {
+            let altSid: Int32 = SherpaOnnxOfflineTtsNumSpeakers(alt) > 1 ? sid : 0
+            if let d = engineSynthesize(text: text, packId: packId, dir: dir, tts: alt, sid: altSid, speed: speed) {
+                failedPacks.remove(packId)
+                return d
+            }
+        }
+        failedPacks.insert(packId)
+        return nil
     }
 
     /// 分配：优先单音色性别包池轮转，其次多音色包 + 编号列表轮转。分配结果按角色缓存。
@@ -480,7 +522,10 @@ final class OfflineTTSManager: ObservableObject {
 
     /// 清除角色分配缓存（性别标注/编号列表变化后调用，下次朗读重新分配）
     func resetAssignments() {
-        engineQueue.async { [weak self] in self?.roleAssignments.removeAll() }
+        engineQueue.async { [weak self] in
+            self?.roleAssignments.removeAll()
+            self?.failedPacks.removeAll()   // 配置变了，允许重新尝试离线合成
+        }
     }
 
     private func engineSynthesize(text: String, packId: String, dir: String,
@@ -511,8 +556,35 @@ final class OfflineTTSManager: ObservableObject {
             DispatchQueue.main.async { self.lastOfflineError = nil }   // 成功即清除历史诊断
             return normalized
         }
-        reportOfflineError("\(packId)：引擎产出静音 WAV（峰值低于可闻阈值，该模型在此设备不出声）")
+        let rawPeak = Self.pcmStats(buffer)?.peak ?? -1
+        reportOfflineError("\(packId)：产出静音（n=\(n) sr=\(sr) 原始峰值=\(rawPeak) ｜ \(Self.engineVersions)）")
         return nil
+    }
+
+    /// 解析 16-bit PCM WAV 的峰值与样本数（诊断用）；解析失败返回 nil。
+    private static func pcmStats(_ data: Data) -> (peak: Int, count: Int)? {
+        guard data.count > 44,
+              data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,
+              data[8] == 0x57, data[9] == 0x41, data[10] == 0x56, data[11] == 0x45 else { return nil }
+        let bits = Int(data[34]) | (Int(data[35]) << 8)
+        guard bits == 16 else { return nil }
+        var offset = 12, dataOffset = -1, dataSize = 0
+        while offset + 8 <= data.count {
+            let ck = String(data: data[offset..<offset + 4], encoding: .ascii) ?? ""
+            let sz = Int(data[offset + 4]) | (Int(data[offset + 5]) << 8)
+                      | (Int(data[offset + 6]) << 16) | (Int(data[offset + 7]) << 24)
+            if ck == "data" { dataOffset = offset + 8; dataSize = sz; break }
+            offset += 8 + sz + (sz & 1)
+        }
+        guard dataOffset > 0, dataSize > 0, dataOffset + dataSize <= data.count else { return nil }
+        let slice = data.subdata(in: dataOffset..<dataOffset + dataSize)
+        let samples = slice.withUnsafeBytes { raw in Array(raw.bindMemory(to: Int16.self)) }
+        var peak = 0
+        for s in samples {
+            let a = abs(Int(s))
+            if a > peak { peak = a }
+        }
+        return (peak, samples.count)
     }
 
     /// 判断 16-bit PCM WAV 是否实质有声（峰值超过可闻阈值）。
@@ -605,8 +677,12 @@ final class OfflineTTSManager: ObservableObject {
     }
 
     /// 从包目录探测文件布局（兼容 piper / hf-theresa / icefall-aishell3 等不同结构）并加载引擎。
-    private func loadEngine(packId: String, dir: String) -> OpaquePointer? {
-        if let cached = engines[packId] { return cached }
+    /// - Parameter useRuleFsts: 是否挂载 date.fst/number.fst 文本归一化规则。
+    ///   同一包会按该开关分别缓存两个引擎（键为 `<packId>` 与 `<packId>#nofst`），
+    ///   便于在「带 FST 产出静音」时用无 FST 引擎重试。
+    private func loadEngine(packId: String, dir: String, useRuleFsts: Bool = true) -> OpaquePointer? {
+        let key = useRuleFsts ? packId : packId + "#nofst"
+        if let cached = engines[key] { return cached }
         let fm = FileManager.default
 
         func firstFile(matching predicate: (String) -> Bool) -> String? {
@@ -643,19 +719,21 @@ final class OfflineTTSManager: ObservableObject {
 
         var config = SherpaOnnxOfflineTtsConfig()
         config.model = model
-        // rule fsts 可能位于 data/ 等子目录（icefall aishell3 布局）
-        let fsts = (fm.subpaths(atPath: dir) ?? [])
-            .filter { ["date.fst", "number.fst"].contains(($0 as NSString).lastPathComponent) }
-            .sorted()
-            .map { dir + "/" + $0 }
-        if !fsts.isEmpty { config.rule_fsts = UnsafePointer(strdup(fsts.joined(separator: ","))) }
+        if useRuleFsts {
+            // rule fsts 可能位于 data/ 等子目录（icefall aishell3 布局）
+            let fsts = (fm.subpaths(atPath: dir) ?? [])
+                .filter { ["date.fst", "number.fst"].contains(($0 as NSString).lastPathComponent) }
+                .sorted()
+                .map { dir + "/" + $0 }
+            if !fsts.isEmpty { config.rule_fsts = UnsafePointer(strdup(fsts.joined(separator: ","))) }
+        }
         config.max_num_sentences = 2
 
         guard let tts = SherpaOnnxCreateOfflineTts(&config) else {
             reportOfflineError("\(packId)：引擎创建失败（模型不兼容或缺少 espeak-ng-data/dict 等资源）")
             return nil
         }
-        engines[packId] = tts
+        engines[key] = tts
         return tts
     }
 

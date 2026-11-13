@@ -109,6 +109,11 @@ struct SettingsView: View {
                         Text("⚠️ 离线合成诊断：" + diag)
                             .font(.caption)
                             .foregroundColor(.red)
+                        Button("清除故障并重试") {
+                            offlineMgr.resetOfflineFailures()
+                            offlineMgr.lastOfflineError = nil
+                        }
+                        .font(.caption)
                     }
                     TextField("男声编号列表（逗号分隔，如 0,3,7）", text: $settings.offlineTTSMaleSIDs)
                         .font(.caption)
