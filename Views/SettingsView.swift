@@ -40,6 +40,25 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("崩溃日志（供排查闪退）") {
+                    if let report = CrashReporter.lastReport() {
+                        ScrollView {
+                            Text(report)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 260)
+                        Button("清除日志") { CrashReporter.clear() }
+                            .font(.caption)
+                        Text("若遇「播放后闪退」，请打开本页，把上方文字复制/截图发开发者，即可定位崩溃堆栈。")
+                            .font(.caption2).foregroundColor(.secondary)
+                    } else {
+                        Text("暂无崩溃记录。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+
                 Section("默认语速") {
                     Slider(value: $settings.defaultRate, in: 0.5...3.0, step: 0.5)
                     HStack {

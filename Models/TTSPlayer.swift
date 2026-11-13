@@ -581,6 +581,13 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     /// 用内存中的音频数据（WAV/MP3 等）播放本段。
     private func playAudioData(_ data: Data, fallbackText: String, notice: String?) {
+        // 前置校验：AVAudioPlayer(data:) 对畸形 WAV 可能抛「不可捕获的 NSException」直接令进程 abort，
+        // 因此只把结构合法的 WAV 交给它；非法数据一律回退本地合成，避免「几秒后闪退」。
+        guard Self.wavHeaderOK(data) else {
+            if let notice { onCloudFallback?() }
+            speakLocal(fallbackText)
+            return
+        }
         do {
             let p = try AVAudioPlayer(data: data)
             p.delegate = self
@@ -590,6 +597,26 @@ final class TTSPlayer: NSObject, ObservableObject {
             if let notice { onCloudFallback?() }
             speakLocal(fallbackText)
         }
+    }
+
+    /// 快速校验 WAV 头部是否结构合法（RIFF/WAVE + 能找到 data 块且声明长度不超出文件）。
+    /// 仅做防御性预检，不解析音频内容；任何异常一律判为不合法。
+    private static func wavHeaderOK(_ data: Data) -> Bool {
+        guard data.count > 44 else { return false }
+        guard data[0] == 0x52, data[1] == 0x49, data[2] == 0x46, data[3] == 0x46,   // RIFF
+              data[8] == 0x57, data[9] == 0x41, data[10] == 0x56, data[11] == 0x45  // WAVE
+        else { return false }
+        var offset = 12
+        var dataOffset = -1, dataSize = 0
+        while offset + 8 <= data.count {
+            let ck = String(data: data[offset..<offset + 4], encoding: .ascii) ?? ""
+            let sz = Int(data[offset + 4]) | (Int(data[offset + 5]) << 8)
+                      | (Int(data[offset + 6]) << 16) | (Int(data[offset + 7]) << 24)
+            if ck == "data" { dataOffset = offset + 8; dataSize = sz; break }
+            offset += 8 + sz + (sz & 1)
+        }
+        guard dataOffset > 0, dataSize > 0, dataOffset + dataSize <= data.count else { return false }
+        return true
     }
 
     /// 本地合成（AVSpeechSynthesizer）。显示语速 × rateScale 换算为内部标度。
