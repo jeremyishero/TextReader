@@ -657,15 +657,39 @@ final class OfflineTTSManager: ObservableObject {
         let fullScale = Double(Int16.max)
         guard rms > 0, peak > 0 else { return data }
 
-        // 目标 RMS ≈ -16 dBFS（朗读舒适响度）；若缩放后峰值超过 0.98 满幅则按峰值限幅，避免削波
-        // 注意单位：rms / peak 都是「原始整数样本」单位，targetRMS / maxPeak 是「相对满幅的比值」，
-        // 因此目标值必须先乘 fullScale 才能与 rms 同量纲，否则 scale 会被算成 ~1e-5，
-        // 缩放后每个样本都 < 0.5，Int16() 截断为 0 → 整段被清零成静音。
+        // 响度参考改用「有声样本 RMS」：段首段尾静音、句内停顿若计入 RMS，
+        // 会把停顿多的段稀释得很安静 → 归一化反而把这段拉得更大声，
+        // 连续说话的段提升少 → 句间时大时小（实测可差 3~5 dB）。
+        // 只统计幅度达到可闻门限的样本，让目标响度对应「说话时的实际电平」。
+        let activeFloor: Double = 300          // ≈ -40.8 dBFS，以下视为静音/呼吸声
+        var actSq = 0.0, actCount = 0
+        for s in samples {
+            let a = abs(Double(s))
+            if a >= activeFloor { actSq += a * a; actCount += 1 }
+        }
+        // 至少 1% 样本有声才采用有声 RMS；近全静音的段退回全段 RMS
+        let rmsRef = actCount >= sampleCount / 100 ? sqrt(actSq / Double(actCount)) : rms
+        guard rmsRef > 0 else { return data }
+
+        // 目标：说话电平 RMS ≈ -16 dBFS（朗读舒适响度）。
+        // 注意单位：rmsRef / peak 是「原始整数样本」单位，targetRMS / maxPeak 是「相对满幅的比值」，
+        // 因此目标值必须先乘 fullScale 才能同量纲（否则 scale ≈ 1e-5，整段被截断清零）。
+        // 增益上限 4x：防止个别轻声段被过度拉高产生喘息效应。
         let targetRMS: Double = 0.16
         let maxPeak: Double = 0.98
-        var scale = (targetRMS * fullScale) / rms
+        var scale = min((targetRMS * fullScale) / rmsRef, 4.0)
         if peak * scale > maxPeak * fullScale {
-            scale = (maxPeak * fullScale) / peak
+            // 峰值限幅处理：若只有极少数样本（<0.5%）会削波，保持增益、对这些样本限幅
+            //（等效限制器，响度一致性优先）；削波面大时才整体压增益，避免可闻失真。
+            let lim = maxPeak * fullScale
+            var clipCount = 0
+            for s in samples {
+                let v = Double(s) * scale
+                if v > lim || v < -lim { clipCount += 1 }
+            }
+            if Double(clipCount) >= Double(sampleCount) * 0.005 {
+                scale = (maxPeak * fullScale) / peak
+            }
         }
         guard scale.isFinite, scale > 0 else { return data }
 
