@@ -94,8 +94,8 @@ enum CrashReporter {
         var header = "\n========== SIGNAL \(name) (\(signum)) ==========\n\(Date())\n"
         header += "Backtrace:\n"
         _ = header.utf8CString.withUnsafeBytes { raw in
-            if let base = raw.baseAddress {
-                writeRaw(base.bindMemory(to: CChar.self), count: header.utf8CString.count - 1)
+            if let base = raw.baseAddress?.assumingMemoryBound(to: CChar.self) {
+                writeRaw(base, count: header.utf8CString.count - 1)
             }
         }
         if let syms {
@@ -127,7 +127,8 @@ enum CrashReporter {
         let url = URL(fileURLWithPath: String(cString: pathBuf))
         let prev = (try? String(contentsOf: url)) ?? ""
         let combined = prev.isEmpty ? text : prev + "\n" + text
-        try? combined.write(to: url, options: .atomic)
+        let data = Data(combined.utf8)
+        try? data.write(to: url, options: .atomic)
     }
 
     /// 读取最近一次崩溃日志（无则返回 nil）。
