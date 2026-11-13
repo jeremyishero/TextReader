@@ -760,7 +760,8 @@ final class OfflineTTSManager: ObservableObject {
             if frameEnergy[f] > silenceE {
                 smooth[f] = (f == 0) ? frameEnergy[f] : alpha * smooth[f - 1] + (1 - alpha) * frameEnergy[f]
             } else {
-                smooth[f] = alpha * smooth[f - 1] + (1 - alpha) * refE
+                // 注意：f==0 时 smooth[-1] 越界（致命错误/SIGTRAP），静音首帧必须回落 refE 而非引用上一帧
+                smooth[f] = (f == 0) ? refE : alpha * smooth[f - 1] + (1 - alpha) * refE
             }
         }
 
