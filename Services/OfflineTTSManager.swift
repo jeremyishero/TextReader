@@ -658,18 +658,31 @@ final class OfflineTTSManager: ObservableObject {
         guard rms > 0, peak > 0 else { return data }
 
         // 目标 RMS ≈ -16 dBFS（朗读舒适响度）；若缩放后峰值超过 0.98 满幅则按峰值限幅，避免削波
+        // 注意单位：rms / peak 都是「原始整数样本」单位，targetRMS / maxPeak 是「相对满幅的比值」，
+        // 因此目标值必须先乘 fullScale 才能与 rms 同量纲，否则 scale 会被算成 ~1e-5，
+        // 缩放后每个样本都 < 0.5，Int16() 截断为 0 → 整段被清零成静音。
         let targetRMS: Double = 0.16
         let maxPeak: Double = 0.98
-        var scale = targetRMS / rms
+        var scale = (targetRMS * fullScale) / rms
         if peak * scale > maxPeak * fullScale {
             scale = (maxPeak * fullScale) / peak
         }
         guard scale.isFinite, scale > 0 else { return data }
 
         let out = samples.map { s -> Int16 in
-            let v = Double(s) * scale
+            // 四舍五入而非截断：小数样本截断会产生直流偏置与低幅细节丢失
+            let v = (Double(s) * scale).rounded()
             return Int16(max(Double(Int16.min), min(Double(Int16.max), v)))
         }
+        // 防护：归一化只能「调整响度」，绝不允许把有声输入变成静音。
+        // 若输出峰值反而低于可闻阈值（缩放算错/精度问题），原样返回未归一化数据，
+        // 宁可响度不均，也不能让整段朗读变无声。
+        var outPeak = 0
+        for s in out {
+            let a = abs(Int(s))
+            if a > outPeak { outPeak = a }
+        }
+        guard outPeak >= 200 else { return data }
         var result = data
         let newData = out.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
         result.replaceSubrange(dataOffset..<dataOffset + dataSize, with: newData)
