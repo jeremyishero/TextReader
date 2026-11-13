@@ -89,6 +89,9 @@ struct AnalysisView: View {
         if pool.isEmpty { pool = all.filter { $0.language.hasPrefix("zh-Hans") } }
         if pool.isEmpty { pool = all.filter { $0.language.hasPrefix("zh") } }
         if pool.isEmpty { pool = all }
+        // 白名单：zh-CN 只保留 Tingting，其余系统声念中文口音生硬（用户要求去掉）；
+        // 无 Tingting 时原样返回（防呆）。在 prefix 截断前过滤，避免 Tingting 被挤掉。
+        pool = TTSPlayer.keepTingting(pool)
         return Array(pool.prefix(10))
     }()
     private var voiceOptions: [AVSpeechSynthesisVoice] { Self.cachedVoiceOptions }
@@ -823,8 +826,11 @@ struct AnalysisView: View {
     }
 
     private func previewSystemVoice(for role: CharacterRole, chosen: String?) {
-        let identifier = chosen
-            ?? TTSPlayer.assignVoicesAndPitches(roles: [role]).voices[role.id]?.identifier
+        // 白名单：旧配置存的其它 zh-CN identifier 忽略（自动分配池已只含 Tingting）
+        let identifier = chosen.flatMap { choice -> String? in
+            if let v = AVSpeechSynthesisVoice(identifier: choice), TTSPlayer.isAllowedSystemVoice(v) { return choice }
+            return nil
+        } ?? TTSPlayer.assignVoicesAndPitches(roles: [role]).voices[role.id]?.identifier
         let voice = identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
         let pitch = TTSPlayer.assignVoicesAndPitches(roles: [role]).pitches[role.id] ?? 1.0
         VoicePreviewer.shared.preview(voice, pitch: pitch)

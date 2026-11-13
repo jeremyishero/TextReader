@@ -17,7 +17,9 @@ struct SettingsView: View {
     }
 
     private var zhHansVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-CN") }
+        // 白名单：只保留 Tingting（其余 zh-CN 系统声念中文口音生硬，用户要求去掉）；
+        // 设备上没有 Tingting 时原样显示（防呆）。
+        TTSPlayer.keepTingting(AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-CN") })
     }
     private var zhHantVoices: [AVSpeechSynthesisVoice] {
         AVSpeechSynthesisVoice.speechVoices().filter {
@@ -225,7 +227,10 @@ struct SettingsView: View {
             }
             // 预听：选定前先听听这个声音的效果
             Button {
-                let voice = selection.wrappedValue.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+                // 白名单：旧配置存的其它 zh-CN identifier 忽略，预听回落到 Tingting
+                let voice = selection.wrappedValue
+                    .flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+                    .flatMap { TTSPlayer.isAllowedSystemVoice($0) ? $0 : nil }
                 VoicePreviewer.shared.preview(voice)
                 _ = previewText
             } label: {

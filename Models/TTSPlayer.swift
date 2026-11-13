@@ -18,7 +18,7 @@ final class VoicePreviewer: ObservableObject {
         let utterance = AVSpeechUtterance(string: "你好，我是中国人")
         if let voice {
             utterance.voice = voice
-        } else if let fallback = AVSpeechSynthesisVoice.speechVoices().first(where: { $0.language == "zh-CN" }) {
+        } else if let fallback = TTSPlayer.keepTingting(AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "zh-CN" }).first {
             utterance.voice = fallback
         }
         utterance.rate = min(max(rate * TTSPlayer.rateScale, 0.0), 1.0)
@@ -158,9 +158,23 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     // MARK: 声音配置
 
+    /// 简体中文（zh-CN）系统声白名单：只放行 Tingting。
+    /// 其余 zh-CN 系统声念中文口音生硬（用户明确要求全部去掉）；其它语言不受限。
+    static func isAllowedSystemVoice(_ v: AVSpeechSynthesisVoice) -> Bool {
+        if v.language.hasPrefix("zh-CN") { return v.name.lowercased().contains("tingting") }
+        return true
+    }
+
+    /// 从列表中只保留 Tingting；若设备上没有 Tingting 则原样返回（防呆：不致无中文声可选）。
+    /// 对非 zh-CN 列表（繁体/英文）无影响，原样通过。
+    static func keepTingting(_ voices: [AVSpeechSynthesisVoice]) -> [AVSpeechSynthesisVoice] {
+        let tt = voices.filter { isAllowedSystemVoice($0) }
+        return tt.isEmpty ? voices : tt
+    }
+
     /// 按语言与性别挑选离线语音（AVSpeechSynthesisVoice 不直接暴露性别，用名称关键词兜底）。
     static func pickVoice(language: String = "zh-CN", preferGender: Gender? = nil) -> AVSpeechSynthesisVoice? {
-        let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(language) }
+        let voices = keepTingting(AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix(language) })
         if let g = preferGender, g != .neutral {
             let keyword = g == .male ? "Male" : "Female"
             if let v = voices.first(where: { $0.name.contains(keyword) }) { return v }
@@ -184,7 +198,9 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 声音性别依据系统声音名称中的 Male/Female/男/女 关键词（注意先判 Female 再判 Male）。
     static func assignVoicesAndPitches(roles: [CharacterRole]) -> (voices: [String: AVSpeechSynthesisVoice], pitches: [String: Float]) {
         let all = AVSpeechSynthesisVoice.speechVoices()
-        var poolBase = all.filter { $0.language == "zh-CN" }
+        // 白名单：zh-CN 只保留 Tingting，其余念中文别扭的系统声不进分配池；
+        // 池内只剩 Tingting 时按既有设计走「性别音高补偿」（男 0.80 / 女 1.18）区分角色。
+        var poolBase = keepTingting(all.filter { $0.language == "zh-CN" })
         if poolBase.isEmpty { poolBase = all.filter { $0.language.hasPrefix("zh-Hans") } }
         if poolBase.isEmpty { poolBase = all.filter { $0.language.hasPrefix("zh") } }
         if poolBase.isEmpty { poolBase = all }

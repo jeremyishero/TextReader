@@ -614,7 +614,7 @@ struct ReadingView: View {
                 guard let choice = voiceOverrides[role.canonicalName] else { continue }
                 if let offline = VoiceChoice.decode(choice) {
                     manualOffline[role.id] = offline
-                } else if AVSpeechSynthesisVoice(identifier: choice) != nil {
+                } else if let v = AVSpeechSynthesisVoice(identifier: choice), TTSPlayer.isAllowedSystemVoice(v) {
                     manualSystem.insert(role.id)
                 }
             }
@@ -627,7 +627,8 @@ struct ReadingView: View {
             var pitches: [String: Float] = [:]
             for role in a.roles {
                 if let identifier = voiceOverrides[role.canonicalName],
-                   let v = AVSpeechSynthesisVoice(identifier: identifier) {
+                   let v = AVSpeechSynthesisVoice(identifier: identifier),
+                   TTSPlayer.isAllowedSystemVoice(v) {
                     map[role.id] = v
                     pitches[role.id] = 1.0   // 手动指定声音后不叠加性别音高补偿
                 } else {
@@ -649,7 +650,11 @@ struct ReadingView: View {
     }
 
     private func resolveVoice(_ identifier: String?) -> AVSpeechSynthesisVoice? {
-        identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+        guard let v = identifier.flatMap({ AVSpeechSynthesisVoice(identifier: $0) }) else { return nil }
+        // 白名单：旧配置里存过的其它 zh-CN 系统声 identifier 一律忽略（念中文口音生硬），
+        // 调用方会经 ?? 链回落到 Tingting。
+        guard TTSPlayer.isAllowedSystemVoice(v) else { return nil }
+        return v
     }
 
     /// 简体/繁体/英文三语声音映射（v1 由用户在设置页手动选声）
