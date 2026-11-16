@@ -27,6 +27,11 @@ targets:
           - "*.xcframework.zip"
           - README.md
           - Info.plist
+          - Scripts
+      # 内置语音包（随版本分发，无需用户导入）：folder reference 保持目录结构
+      - path: BundledVoicePacks
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: CoreLogic
       - package: ZIPFoundation

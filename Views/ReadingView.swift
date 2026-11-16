@@ -626,7 +626,10 @@ struct ReadingView: View {
             var manualSystem: Set<String> = []
             for role in a.roles {
                 guard let choice = voiceOverrides[role.canonicalName] else { continue }
-                if let offline = VoiceChoice.decode(choice) {
+                if let preset = VoicePresetProvider.byEncoded(choice) {
+                    // 48 音色预设：还原为 (packId, sid) 直连该包该说话人
+                    manualOffline[role.id] = (preset.packId, preset.sid)
+                } else if let offline = VoiceChoice.decode(choice) {
                     manualOffline[role.id] = offline
                 } else if let v = AVSpeechSynthesisVoice(identifier: choice), TTSPlayer.isAllowedSystemVoice(v) {
                     manualSystem.insert(role.id)

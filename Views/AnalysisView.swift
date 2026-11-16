@@ -125,6 +125,10 @@ struct AnalysisView: View {
 
     private func refreshOfflineVoiceOptions() {
         var out: [VoiceOption] = []
+        // 48 音色预设（正式+专用池）排最前：与 PC 试听器共用同一份 VoicePresets.json
+        for opt in VoicePresetProvider.manualOptions() {
+            out.append(.init(id: opt.id, name: opt.name))
+        }
         for pack in offlineMgr.installedPacks() {
             let annotated = settings.offlinePackGenders[pack.id]
             let isMulti = (annotated == "multi")

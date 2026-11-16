@@ -140,8 +140,19 @@ final class OfflineTTSManager: ObservableObject {
         fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("VoicePacks", isDirectory: true)
     }
+    /// 内置语音包根目录（随版本分发的 BundledVoicePacks/，无需用户导入；
+    /// CI 构建时把正式音色依赖的模型放进来，用户下载/导入的 Documents 包优先级更高）。
+    private var bundledPacksRoot: URL? {
+        Bundle.main.url(forResource: "BundledVoicePacks", withExtension: nil)
+    }
     func packDir(_ id: String) -> URL {
-        packsRoot.appendingPathComponent(id, isDirectory: true)
+        let doc = packsRoot.appendingPathComponent(id, isDirectory: true)
+        if fm.fileExists(atPath: doc.path) { return doc }
+        if let b = bundledPacksRoot {
+            let bundled = b.appendingPathComponent(id, isDirectory: true)
+            if fm.fileExists(atPath: bundled.path) { return bundled }
+        }
+        return doc
     }
     func isInstalled(_ id: String) -> Bool {
         // tokens.txt 可能在包根目录或 data/ 等子目录（icefall aishell3 布局）
@@ -378,6 +389,8 @@ final class OfflineTTSManager: ObservableObject {
 
     /// 角色分配缓存：characterId → (packId, sid)，同一角色（含别名）全程固定同一声音
     private var roleAssignments: [String: (packId: String, sid: Int32)] = [:]
+    /// 预设联动：角色 → 预设语速倍率（与用户语速相乘；非预设分配的角色无条目）。
+    private var presetSpeeds: [String: Float] = [:]
     /// 同性别池轮转游标（保证不同角色分到不同声音）
     private var rotationCursor: [String: Int] = [:]
 
@@ -402,7 +415,10 @@ final class OfflineTTSManager: ObservableObject {
                     cont.resume(returning: nil); return
                 }
                 let dir = self.packDir(packId).path
-                let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
+                // 预设联动：预设自带语速倍率（童年稍快/老年稍慢）与用户语速相乘
+                let presetMul = self.presetSpeeds[characterId] ?? 1.0
+                let data = self.synthWithFallback(text: text, packId: packId, dir: dir,
+                                                  sid: sid, speed: speed * presetMul)
                 cont.resume(returning: data)
             }
         }
@@ -449,7 +465,8 @@ final class OfflineTTSManager: ObservableObject {
         return nil
     }
 
-    /// 分配：优先单音色性别包池轮转，其次多音色包 + 编号列表轮转。分配结果按角色缓存。
+    /// 分配：优先「48 音色预设」稳定分配（正式池/专用池，同角色同声音）；
+    /// 预设未命中（中性角色 / 对应包未安装）再走单音色性别包池轮转、多音色包 + 编号列表轮转。分配结果按角色缓存。
     private func assign(characterId: String, gender: Gender,
                         packGenders: [String: String], installedIds: [String],
                         maleSIDs: [Int32], femaleSIDs: [Int32]) -> (String, Int32)? {
@@ -457,6 +474,15 @@ final class OfflineTTSManager: ObservableObject {
            isInstalled(cached.packId) {
             return (cached.packId, cached.sid)
         }
+        // 预设联动：正式/专用音色池稳定分配（太监→「公公」专用；男/女→primary 池按角色哈希分散）。
+        // 语速倍率记入 presetSpeeds，合成时与用户语速相乘。
+        if let preset = VoicePresetProvider.assign(gender: gender, characterId: characterId),
+           isInstalled(preset.packId) {
+            roleAssignments[characterId] = (preset.packId, preset.sid)
+            presetSpeeds[characterId] = preset.speed
+            return (preset.packId, preset.sid)
+        }
+        presetSpeeds.removeValue(forKey: characterId)
         // installedIds 由调用方在进入后台队列前算好（含 zip 导入的自定义包），这里只做纯内存轮转。
         // 仅纳入「用户显式标注性别」的包（与 320d2b40 行为一致）：未标注的包不参与自动分配，
         // 避免离线引擎在该设备产出静音时仍被路由。显式标注过性别的导入包照常参与轮转。
