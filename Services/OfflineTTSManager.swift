@@ -483,7 +483,7 @@ final class OfflineTTSManager: ObservableObject {
         var packId: String? = nil
         var sid: Int32 = 0
         switch gender {
-        case .male:
+        case .male, .eunuch:   // 太监走男声包池
             if !malePacks.isEmpty {
                 packId = rotatePack(malePacks, cursorKey: "malePack")
             } else if !multiPacks.isEmpty, !maleSIDs.isEmpty {

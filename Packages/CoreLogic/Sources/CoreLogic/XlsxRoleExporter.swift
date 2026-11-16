@@ -30,12 +30,7 @@ public struct XlsxRoleExporter {
             let aliases = role.aliases
                 .filter { $0 != role.canonicalName }
                 .joined(separator: "、")
-            let g: String
-            switch role.gender {
-            case .male: g = "男"
-            case .female: g = "女"
-            case .neutral: g = "中性"
-            }
+            let g: String = role.gender.cn
             rows.append([
                 role.canonicalName,
                 aliases,

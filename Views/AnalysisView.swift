@@ -37,6 +37,23 @@ struct AnalysisView: View {
     @State private var editingRole: CharacterRole? = nil
     @State private var editNameText: String = ""
     @State private var editGender: Gender = .neutral
+    @State private var editIdentity: RoleIdentity = .supporting
+    // 添加角色（角色面板「+」）：字段与白名单一致，直接写入角色表
+    @State private var showAddRoleSheet = false
+    @State private var addRoleName = ""
+    @State private var addRoleGender: Gender = .neutral
+    @State private var addRoleIdentity: RoleIdentity = .supporting
+    @State private var addRoleVoice = ""          // voiceOverrides 值；"" = 按性别自动分配
+    // 白名单添加表单（性别/身份/声音直接落到角色表）
+    @State private var newWhiteGender: Gender = .neutral
+    @State private var newWhiteIdentity: RoleIdentity = .supporting
+    @State private var newWhiteVoice = ""
+    // 黑名单添加表单（黑名单语义是「永不识别」，性别/身份/声音暂存不生效）
+    @State private var newBlackGender: Gender = .neutral
+    @State private var newBlackIdentity: RoleIdentity = .supporting
+    @State private var newBlackVoice = ""
+    // 规则类型：替换 / 跳过
+    @State private var ruleKindDraft: CustomRule.Kind = .replace
     // 拉黑角色确认
     @State private var showBlacklistConfirm = false
     @State private var blacklistTarget: CharacterRole? = nil
@@ -173,6 +190,9 @@ struct AnalysisView: View {
             .sheet(isPresented: $showEditSheet) {
                 editRoleSheet
             }
+            .sheet(isPresented: $showAddRoleSheet) {
+                addRoleSheet
+            }
             .confirmationDialog(
                 "拉黑角色",
                 isPresented: $showBlacklistConfirm,
@@ -189,13 +209,20 @@ struct AnalysisView: View {
             } message: {
                 Text(dupMessage)
             }
-            .alert(editingRuleFind == nil ? "添加新规则" : "修改规则", isPresented: $showRuleAlert) {
+            .alert(editingRuleFind == nil
+                   ? (ruleKindDraft == .skip ? "添加跳过规则" : "添加替换规则")
+                   : "修改规则",
+                   isPresented: $showRuleAlert) {
                 TextField("匹配文本（朗读中出现）", text: $ruleFindDraft)
-                TextField("替换文本（改为朗读）", text: $ruleReplaceDraft)
+                if ruleKindDraft == .replace {
+                    TextField("替换文本（改为朗读）", text: $ruleReplaceDraft)
+                }
                 Button("保存", action: commitRule)
                 Button("取消", role: .cancel) {}
             } message: {
-                Text("朗读时把「匹配文本」替换为「替换文本」。例：匹配「……」替换为「……无语」，人物说话出现省略号时会多读一句「无语」。")
+                Text(ruleKindDraft == .skip
+                     ? "朗读时「匹配文本」将被整体忽略/跳过（不读出来）。适合屏蔽特殊符号、乱码、广告水印等。"
+                     : "朗读时把「匹配文本」替换为「替换文本」。例：匹配「……」替换为「……无语」，人物说话出现省略号时会多读一句「无语」。")
             }
             .confirmationDialog("确认删除", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
                 Button("删除", role: .destructive, action: executeDelete)
@@ -376,6 +403,19 @@ struct AnalysisView: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(otherDocuments.isEmpty)
+                    Spacer()
+                    // 直接新增一个角色（字段与白名单一致，写入角色表）
+                    Button {
+                        addRoleName = ""
+                        addRoleGender = .neutral
+                        addRoleIdentity = .supporting
+                        addRoleVoice = ""
+                        showAddRoleSheet = true
+                    } label: {
+                        Label("添加角色", systemImage: "person.badge.plus")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
                 HStack {
                     Button {
@@ -470,6 +510,7 @@ struct AnalysisView: View {
                         editingRole = role
                         editNameText = role.canonicalName
                         editGender = role.gender
+                        editIdentity = role.identity
                         showEditSheet = true
                     } label: {
                         Image(systemName: "pencil").font(.caption)
@@ -557,7 +598,29 @@ struct AnalysisView: View {
             panelHeader("黑名单（\(blacklisted.count)）")
             Text("名单中的词永远不会被识别为人名。重新「整体解析」后生效。")
                 .font(.caption2).foregroundColor(.secondary)
-            wordEditor(text: $newBlackWord, placeholder: "输入要屏蔽的词") { addWord(newBlackWord, to: .blacklist) }
+            HStack {
+                TextField("输入要屏蔽的词", text: $newBlackWord)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Button("添加") { addWord(newBlackWord, to: .blacklist); newBlackWord = "" }
+                    .buttonStyle(.borderedProminent)
+            }
+            // 黑名单的语义是「屏蔽不解析」：性别/身份/声音在这里暂存，不参与朗读分配
+            Picker("性别", selection: $newBlackGender) {
+                Text("男").tag(Gender.male)
+                Text("女").tag(Gender.female)
+                Text("中性").tag(Gender.neutral)
+                Text("太监").tag(Gender.eunuch)
+            }
+            .pickerStyle(.segmented)
+            Picker("身份", selection: $newBlackIdentity) {
+                Text("主角").tag(RoleIdentity.protagonist)
+                Text("配角").tag(RoleIdentity.supporting)
+                Text("路人").tag(RoleIdentity.extra)
+            }
+            .pickerStyle(.segmented)
+            Text("提示：黑名单的作用是屏蔽（不解析），性别/身份/声音仅作为后续转换白名单/建角色时的预填值。")
+                .font(.caption2).foregroundColor(.secondary)
             ForEach(blacklisted, id: \.self) { w in
                 wordRow(w, list: .blacklist)
             }
@@ -568,9 +631,37 @@ struct AnalysisView: View {
     private var whitelistPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             panelHeader("白名单（\(whitelisted.count)）")
-            Text("名单中的词一定是人名或称呼，出现即识别为角色（即使只出现一次）。重新「整体解析」后生效。")
+            Text("名单中的词一定是人名或称呼，出现即识别为角色（即使只出现一次）；下方选好的性别/身份/声音会直接写入角色表。重新「整体解析」后生效。")
                 .font(.caption2).foregroundColor(.secondary)
-            wordEditor(text: $newWhiteWord, placeholder: "输入一定是人名的词") { addWord(newWhiteWord, to: .whitelist) }
+            HStack {
+                TextField("输入一定是人名的词", text: $newWhiteWord)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Button("添加") { addWhitelistEntry() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Picker("性别", selection: $newWhiteGender) {
+                Text("男").tag(Gender.male)
+                Text("女").tag(Gender.female)
+                Text("中性").tag(Gender.neutral)
+                Text("太监").tag(Gender.eunuch)
+            }
+            .pickerStyle(.segmented)
+            Picker("身份", selection: $newWhiteIdentity) {
+                Text("主角").tag(RoleIdentity.protagonist)
+                Text("配角").tag(RoleIdentity.supporting)
+                Text("路人").tag(RoleIdentity.extra)
+            }
+            .pickerStyle(.segmented)
+            Picker("声音", selection: $newWhiteVoice) {
+                Text("按性别自动分配").tag("")
+                ForEach(voiceOptions, id: \.identifier) { v in
+                    Text("系统｜" + v.name).tag(v.identifier)
+                }
+                ForEach(offlineVoiceOptions) { o in
+                    Text(o.name).tag(o.id)
+                }
+            }
             ForEach(whitelisted, id: \.self) { w in
                 wordRow(w, list: .whitelist)
             }
@@ -578,24 +669,66 @@ struct AnalysisView: View {
         .padding(12)
     }
 
+    /// 白名单添加：词入名单（含查重），性别/身份/声音直接落到角色表（新增或更新既有角色）。
+    private func addWhitelistEntry() {
+        let word = newWhiteWord.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !word.isEmpty else { return }
+        newWhiteWord = ""
+        guard !whitelisted.contains(word) else { return }
+        if blacklisted.contains(word) {
+            dupWord = word; dupFromList = .blacklist; dupTargetList = .whitelist
+            showDupAlert = true
+            return
+        }
+        onListsChanged?(blacklisted, whitelisted + [word])
+        // 元数据落角色表
+        if let idx = analysis.roles.firstIndex(where: { $0.canonicalName == word || $0.aliases.contains(word) }) {
+            analysis.roles[idx].gender = newWhiteGender
+            analysis.roles[idx].identity = newWhiteIdentity
+        } else {
+            analysis.roles.append(CharacterRole(id: "user_" + word, canonicalName: word,
+                                                aliases: [word], gender: newWhiteGender,
+                                                identity: newWhiteIdentity))
+        }
+        if !newWhiteVoice.isEmpty {
+            var updated = voiceOverrides
+            updated[word] = newWhiteVoice
+            onVoiceChanged?(updated)
+        }
+        onEdited?()
+    }
+
     // MARK: 自定义规则面板（≤20 条）
 
     private var rulesPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             panelHeader("自定义规则（\(rules.count)/20）")
-            Text("朗读时把「匹配文本」替换为「替换文本」，本地/云端朗读均生效，保存后立即应用。")
+            Text("替换类：把「匹配文本」替换为「替换文本」；跳过类：把「匹配文本」整体忽略不读。本地/云端朗读均生效，保存后立即应用。")
                 .font(.caption2).foregroundColor(.secondary)
-            Button {
-                ruleFindDraft = ""
-                ruleReplaceDraft = ""
-                editingRuleFind = nil
-                showRuleAlert = true
-            } label: {
-                Label("添加新规则", systemImage: "plus.circle.fill")
-                    .font(.caption)
-                    .frame(maxWidth: .infinity)
+            HStack {
+                Button {
+                    ruleKindDraft = .replace
+                    ruleFindDraft = ""
+                    ruleReplaceDraft = ""
+                    editingRuleFind = nil
+                    showRuleAlert = true
+                } label: {
+                    Label("添加替换规则", systemImage: "arrow.triangle.swap")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                Button {
+                    ruleKindDraft = .skip
+                    ruleFindDraft = ""
+                    ruleReplaceDraft = ""
+                    editingRuleFind = nil
+                    showRuleAlert = true
+                } label: {
+                    Label("添加跳过规则", systemImage: "eye.slash")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
             .disabled(rules.count >= 20)
             if rules.count >= 20 {
                 Text("已达上限 20 条，请先删除不需要的规则。")
@@ -606,12 +739,15 @@ struct AnalysisView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("「\(rule.find)」")
                             .font(.caption.bold())
-                        Text("→ 朗读「\(rule.replace)」")
+                        Text(rule.kind == .skip
+                             ? "→ 整体跳过（不朗读）"
+                             : "→ 朗读「\(rule.replace)」")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
                     Spacer()
                     Button {
+                        ruleKindDraft = rule.kind
                         ruleFindDraft = rule.find
                         ruleReplaceDraft = rule.replace
                         editingRuleFind = rule.find
@@ -676,7 +812,9 @@ struct AnalysisView: View {
                 ? "从黑名单移除「\(word)」后，该词将不再被强制屏蔽。确定删除吗？"
                 : "从白名单移除「\(word)」后，该词将不再被强制识别为人名。确定删除吗？"
         case .rule(let rule):
-            return "删除规则「\(rule.find) → \(rule.replace)」后立即生效。确定删除吗？"
+            return rule.kind == .skip
+                ? "删除跳过规则「\(rule.find)」后立即生效。确定删除吗？"
+                : "删除规则「\(rule.find) → \(rule.replace)」后立即生效。确定删除吗？"
         case nil:
             return ""
         }
@@ -758,18 +896,17 @@ struct AnalysisView: View {
 
     private func commitRule() {
         let find = ruleFindDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let replace = ruleReplaceDraft
         guard !find.isEmpty else { return }
         var updated = rules
-        if let editing = editingRuleFind, let idx = updated.firstIndex(where: { $0.id == editing }) {
-            updated[idx] = CustomRule(find: find, replace: replace)
-        } else {
+        let newRule = CustomRule(kind: ruleKindDraft, find: find,
+                                 replace: ruleKindDraft == .skip ? "" : ruleReplaceDraft)
+        if let editing = editingRuleFind, let idx = updated.firstIndex(where: { $0.find == editing }) {
+            updated[idx] = newRule
+        } else if let idx = updated.firstIndex(where: { $0.find == find }) {
             // 同匹配文本的规则直接更新，避免重复
-            if let idx = updated.firstIndex(where: { $0.id == find }) {
-                updated[idx] = CustomRule(find: find, replace: replace)
-            } else {
-                updated.append(CustomRule(find: find, replace: replace))
-            }
+            updated[idx] = newRule
+        } else {
+            updated.append(newRule)
         }
         onRulesChanged?(updated)
     }
@@ -850,11 +987,20 @@ struct AnalysisView: View {
                         Text("男").tag(Gender.male)
                         Text("女").tag(Gender.female)
                         Text("中性").tag(Gender.neutral)
+                        Text("太监").tag(Gender.eunuch)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section("身份（主角 / 配角 / 路人）") {
+                    Picker("身份", selection: $editIdentity) {
+                        Text("主角").tag(RoleIdentity.protagonist)
+                        Text("配角").tag(RoleIdentity.supporting)
+                        Text("路人").tag(RoleIdentity.extra)
                     }
                     .pickerStyle(.segmented)
                 }
                 Section {
-                    Text("原称呼将保留为该角色的别名之一，朗读时同一角色仍使用同一声音；性别会用于离线/系统声音按男声、女声自动匹配。")
+                    Text("原称呼将保留为该角色的别名之一，朗读时同一角色仍使用同一声音；性别会用于离线/系统声音按男声、女声自动匹配（太监走男声）。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -880,6 +1026,7 @@ struct AnalysisView: View {
         let genderChanged = analysis.roles[idx].gender != editGender
         analysis.roles[idx].canonicalName = newName
         analysis.roles[idx].gender = editGender
+        analysis.roles[idx].identity = editIdentity
         if old != newName, !analysis.roles[idx].aliases.contains(old) {
             analysis.roles[idx].aliases.append(old)
         }
@@ -897,6 +1044,78 @@ struct AnalysisView: View {
         onEdited?()
         showEditSheet = false
         editingRole = nil
+    }
+
+    // MARK: 添加角色（「+」；字段与白名单一致，直接写入角色表）
+
+    private var addRoleSheet: some View {
+        NavigationStack {
+            Form {
+                Section("称呼") {
+                    TextField("姓名 / 称呼", text: $addRoleName)
+                        .autocorrectionDisabled()
+                }
+                Section("性别（用于自动选声匹配）") {
+                    Picker("性别", selection: $addRoleGender) {
+                        Text("男").tag(Gender.male)
+                        Text("女").tag(Gender.female)
+                        Text("中性").tag(Gender.neutral)
+                        Text("太监").tag(Gender.eunuch)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section("身份（主角 / 配角 / 路人）") {
+                    Picker("身份", selection: $addRoleIdentity) {
+                        Text("主角").tag(RoleIdentity.protagonist)
+                        Text("配角").tag(RoleIdentity.supporting)
+                        Text("路人").tag(RoleIdentity.extra)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section("声音（可选）") {
+                    Picker("声音", selection: $addRoleVoice) {
+                        Text("按性别自动分配").tag("")
+                        ForEach(voiceOptions, id: \.identifier) { v in
+                            Text("系统｜" + v.name).tag(v.identifier)
+                        }
+                        ForEach(offlineVoiceOptions) { o in
+                            Text(o.name).tag(o.id)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("添加角色")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("取消") { showAddRoleSheet = false }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("添加") { commitAddRole() }
+                }
+            }
+        }
+    }
+
+    private func commitAddRole() {
+        let name = addRoleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        // 防重复：已存在同称呼角色则只更新属性
+        if let idx = analysis.roles.firstIndex(where: { $0.canonicalName == name || $0.aliases.contains(name) }) {
+            analysis.roles[idx].gender = addRoleGender
+            analysis.roles[idx].identity = addRoleIdentity
+        } else {
+            analysis.roles.append(CharacterRole(id: "user_" + name, canonicalName: name,
+                                                aliases: [name], gender: addRoleGender,
+                                                identity: addRoleIdentity))
+        }
+        if !addRoleVoice.isEmpty {
+            var updated = voiceOverrides
+            updated[name] = addRoleVoice
+            onVoiceChanged?(updated)
+        }
+        onEdited?()
+        showAddRoleSheet = false
     }
 
     // MARK: 拉黑角色
@@ -1181,10 +1400,10 @@ struct AnalysisView: View {
     // MARK: 展示辅助
 
     private func genderLabel(_ g: Gender) -> String {
-        switch g { case .male: return "男"; case .female: return "女"; case .neutral: return "中性" }
+        switch g { case .male: return "男"; case .female: return "女"; case .neutral: return "中性"; case .eunuch: return "太监" }
     }
     private func genderColor(_ g: Gender) -> Color {
-        switch g { case .male: return .blue; case .female: return .pink; case .neutral: return .gray }
+        switch g { case .male: return .blue; case .female: return .pink; case .neutral: return .gray; case .eunuch: return .purple }
     }
     private func emotionLabel(_ e: Emotion) -> String {
         switch e {

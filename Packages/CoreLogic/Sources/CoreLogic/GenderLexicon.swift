@@ -1,10 +1,41 @@
 import Foundation
 
 /// 角色性别（用于声音分配）。neutral 表示中性声，用于无法判定或旁白。
+/// eunuch 太监：太监角色专用音色（App 端单独留用「公公」这类声音），投票时按男声计。
 public enum Gender: String, Codable, CaseIterable, Sendable {
     case male
     case female
     case neutral
+    case eunuch
+}
+
+/// 角色身份（重要度）：主角 / 配角 / 路人。
+/// 路人只作占位展示（如「那人」类泛称可选归入），朗读时路人可回落中性声。
+public enum RoleIdentity: String, Codable, CaseIterable, Sendable {
+    case protagonist   // 主角
+    case supporting    // 配角
+    case extra         // 路人
+}
+
+extension RoleIdentity {
+    public var cn: String {
+        switch self {
+        case .protagonist: return "主角"
+        case .supporting: return "配角"
+        case .extra: return "路人"
+        }
+    }
+}
+
+extension Gender {
+    public var cn: String {
+        switch self {
+        case .male: return "男"
+        case .female: return "女"
+        case .neutral: return "中性"
+        case .eunuch: return "太监"
+        }
+    }
 }
 
 /// 多角度性别打分：male/female 各自累加，最终按阈值投票，差异不足则判中性以降低误判。
@@ -18,6 +49,7 @@ public struct GenderScore {
         switch g {
         case .male: male += weight
         case .female: female += weight
+        case .eunuch: male += weight      // 太监按男声计票
         case .neutral: break
         }
     }

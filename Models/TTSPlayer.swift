@@ -40,12 +40,32 @@ final class VoicePreviewer: ObservableObject {
     }
 }
 
-/// 自定义朗读规则（每文档最多 20 条）：朗读前把「匹配文本」替换为「替换文本」。
+/// 自定义朗读规则（每文档最多 20 条）：
+/// - replace：朗读前把「匹配文本」替换为「替换文本」（例：「……」→「……无语」）；
+/// - skip：把「匹配文本」整体忽略/跳过（不朗读），如特殊符号、乱码、广告水印等。
 /// 例：匹配「……」替换为「……无语」→ 人物说话出现省略号时会多读一句「无语」。
 struct CustomRule: Codable, Identifiable, Equatable {
+    enum Kind: String, Codable { case replace, skip }
+    var kind: Kind
     var find: String
     var replace: String
-    var id: String { find }
+    var id: String { kind.rawValue + "|" + find }
+
+    init(kind: Kind = .replace, find: String, replace: String) {
+        self.kind = kind
+        self.find = find
+        self.replace = replace
+    }
+
+    // 旧配置（< 每文档 rules.json）没有 kind 字段 → 补默认 .replace，避免反序列化失败
+    private enum CodingKeys: String, CodingKey { case kind, find, replace }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .replace
+        find = try c.decode(String.self, forKey: .find)
+        replace = try c.decode(String.self, forKey: .replace)
+    }
 }
 
 /// 朗读控制器：封装 AVSpeechSynthesizer + 云端 TTS 备选通道。
@@ -60,6 +80,11 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 语速（显示标度）：1.0 = 正常人语速，范围 0.5–3.0。
     /// 内部朗读时乘以 rateScale 换算为 AVSpeechUtterance 标度（其 0.5 = 正常语速）。
     @Published var rate: Float = 1.0
+    /// 段落间停顿（秒）：段末带 TextChunker.paragraphBreakMarker 时使用；默认 0.45 与旧行为一致。
+    /// 由 ReadingView 按设置页「段落间停顿」注入，改动后下次起播生效。
+    var paragraphPause: TimeInterval = 0.45
+    /// 章节间停顿（秒）：当前段以「第X章/回/卷」开头时，取 max(段落停顿, 章节停顿)。
+    var chapterPause: TimeInterval = 1.2
     @Published var currentSegmentIndex: Int = -1
     /// 当前正在朗读的文本（供阅读页同步高亮段落）
     @Published var nowSpeakingText: String?
@@ -122,12 +147,19 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 自定义朗读规则（由 ReadingView 按文档注入；本地/云端朗读前统一应用）
     var customRules: [CustomRule] = []
 
-    /// 依次应用自定义规则：匹配文本 → 替换文本
+    /// 依次应用自定义规则：替换类按「匹配 → 替换」，跳过类把匹配内容整体移除。
     private func applyCustomRules(_ text: String) -> String {
         guard !customRules.isEmpty else { return text }
         var out = text
         for rule in customRules where !rule.find.isEmpty {
-            out = out.replacingOccurrences(of: rule.find, with: rule.replace)
+            switch rule.kind {
+            case .replace:
+                out = out.replacingOccurrences(of: rule.find, with: rule.replace)
+            case .skip:
+                out = out.replacingOccurrences(of: rule.find, with: "")
+            case .pause:
+                break   // 停顿不作用于文本层（见全局段落/章节停顿设置）
+            }
         }
         return out
     }
@@ -236,7 +268,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         for role in roles {
             let pitch: Float
             switch role.gender {
-            case .male:
+            case .male, .eunuch:   // 太监走男声池
                 if !malePool.isEmpty {
                     voices[role.id] = malePool[mi % malePool.count]; mi += 1
                 }
@@ -545,10 +577,14 @@ final class TTSPlayer: NSObject, ObservableObject {
     private func buildUtterance(for idx: Int, text: String) -> AVSpeechUtterance {
         var content = text
         var postDelay: TimeInterval = 0.06
+        // 章节开头（第X章/回/卷）→ 章节间停顿；段落末尾标记 → 段落间停顿
+        let isChapterStart = content.range(of: #"^\s*第[一二三四五六七八九十百千0-9]+[章回卷]"#,
+                                           options: .regularExpression) != nil
         if content.hasSuffix(TextChunker.paragraphBreakMarker) {
             content.removeLast()
-            postDelay = 0.45
+            postDelay = paragraphPause
         }
+        if isChapterStart { postDelay = max(postDelay, chapterPause) }
         let utterance = AVSpeechUtterance(string: content)
         utterance.postUtteranceDelay = postDelay
         let internalRate = rate * Self.rateScale
@@ -632,6 +668,16 @@ final class TTSPlayer: NSObject, ObservableObject {
         currentIndex += 1
         speakCurrent()
     }
+
+    /// 离线/云端音频路径的段间停顿：按刚读完的段落文本判定（章节开头 → 章节停顿；其余 → 短间隔）。
+    private func pauseAfterCurrentSegment() -> TimeInterval {
+        guard let raw = currentText() else { return 0.06 }
+        let head = String(raw.prefix(16))
+        if head.range(of: #"第[一二三四五六七八九十百千0-9]+[章回卷]"#, options: .regularExpression) != nil {
+            return max(paragraphPause, chapterPause)
+        }
+        return 0.06
+    }
 }
 
 extension TTSPlayer: AVSpeechSynthesizerDelegate {
@@ -648,6 +694,13 @@ extension TTSPlayer: AVSpeechSynthesizerDelegate {
 
 extension TTSPlayer: AVAudioPlayerDelegate {
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in advance() }
+        Task { @MainActor in
+            // 离线/云端音频没有 postUtteranceDelay，按刚读完的段落在推进前补停顿
+            let d = self.pauseAfterCurrentSegment()
+            if d > 0.05 {
+                try? await Task.sleep(nanoseconds: UInt64(d * 1_000_000_000))
+            }
+            self.advance()
+        }
     }
 }

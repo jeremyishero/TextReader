@@ -533,6 +533,9 @@ struct ReadingView: View {
                 maleSIDs: maleSIDs, femaleSIDs: femaleSIDs, speed: speed)
         }
         player.autoVoiceSwitch = settings.autoVoiceSwitch
+        // 段落/章节停顿（设置页可调；改动后从下一次起播生效）
+        player.paragraphPause = settings.paragraphPause
+        player.chapterPause = settings.chapterPause
         // 云端合成失败自动回退本地时，给用户一个明确提示（不再静默）
         player.onCloudFallback = {
             showToast("云端语音合成失败，本段已改用本地朗读")

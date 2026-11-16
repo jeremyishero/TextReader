@@ -37,6 +37,38 @@ struct SettingsView: View {
         }
     }
 
+    /// 「旁白声音」统一选择器的桥接绑定：
+    ///   ""               → 系统默认声（voiceZhHans=nil，narrationOfflinePackId=""）
+    ///   "sys:<id>"       → 简体中文系统声（写 voiceZhHans）
+    ///   "offline:<pack>" → 离线语音包（写 narrationOfflinePackId）
+    /// 两个底层存储字段保持不变，播放链路（ReadingView）无需改动。
+    private var narrationChoice: Binding<String> {
+        let zhIds = Set(zhHansVoices.map { $0.identifier })
+        return Binding(
+            get: {
+                if !settings.narrationOfflinePackId.isEmpty {
+                    return "offline:" + settings.narrationOfflinePackId
+                }
+                if let id = settings.voiceZhHans, zhIds.contains(id) {
+                    return "sys:" + id
+                }
+                return ""
+            },
+            set: { v in
+                if v.hasPrefix("offline:") {
+                    settings.narrationOfflinePackId = String(v.dropFirst("offline:".count))
+                    settings.voiceZhHans = nil
+                } else if v.hasPrefix("sys:") {
+                    settings.voiceZhHans = String(v.dropFirst("sys:".count))
+                    settings.narrationOfflinePackId = ""
+                } else {
+                    settings.voiceZhHans = nil
+                    settings.narrationOfflinePackId = ""
+                }
+            }
+        )
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -60,41 +92,59 @@ struct SettingsView: View {
                 }
 
                 Section("默认语速") {
-                    Slider(value: $settings.defaultRate, in: 0.5...3.0, step: 0.5)
+                    Slider(value: $settings.defaultRate, in: 0.5...3.0, step: 0.25)
                     HStack {
                         Text(String(format: "当前：%.2f×（1.0 = 正常人语速）", settings.defaultRate))
                         Spacer()
                         Button("重置 1.0×") { settings.defaultRate = 1.0 }
                             .controlSize(.small)
                     }
+                    Text("0.5 起步，0.25 一档：0.5 / 0.75 / 1.0 / 1.25 / 1.5 / 1.75 / 2.0 / 2.25 / 2.5 / 2.75 / 3.0")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+
+                Section("段落 / 章节停顿") {
+                    HStack {
+                        Text("段落间")
+                        Spacer()
+                        Text(String(format: "%.2f 秒", settings.paragraphPause))
+                            .font(.callout.monospacedDigit())
+                    }
+                    Slider(value: $settings.paragraphPause, in: 0...5, step: 0.25)
+                    HStack {
+                        Text("章节间（第X章/回/卷 处）")
+                        Spacer()
+                        Text(String(format: "%.2f 秒", settings.chapterPause))
+                            .font(.callout.monospacedDigit())
+                    }
+                    Slider(value: $settings.chapterPause, in: 0...10, step: 0.25)
+                    Text("改动后从下一次开始朗读起生效；章节间停顿仅在段首为「第X章/回/卷」时使用。")
+                        .font(.caption2).foregroundColor(.secondary)
                 }
 
                 Section {
-                    voicePicker("声音", voices: zhHansVoices, selection: $settings.voiceZhHans)
-                } header: {
-                    Text("简体中文声音（旁白 / 默认）")
-                }
-
-                Section {
-                    Picker("旁白离线语音包", selection: $settings.narrationOfflinePackId) {
-                        Text("系统默认声（当前旁白）").tag("")
-                        // 用磁盘扫描结果：下载包 + zip 导入的自定义包都能选
+                    Picker("旁白声音", selection: narrationChoice) {
+                        Text("系统默认声").tag("")
+                        ForEach(zhHansVoices, id: \.identifier) { v in
+                            Text(v.name + "（系统）").tag("sys:" + v.identifier)
+                        }
                         ForEach(installedPacksSnapshot) { pack in
-                            Text(pack.displayName).tag(pack.id)
+                            Text(pack.displayName + "（离线包）").tag("offline:" + pack.id)
                         }
                     }
                     if !settings.narrationOfflinePackId.isEmpty {
-                        let isMulti = OfflineTTSManager.packs.first(where: { $0.id == settings.narrationOfflinePackId })?.gender == "多音色"
-                        if isMulti {
+                        let staticMulti = OfflineTTSManager.packs.first(where: { $0.id == settings.narrationOfflinePackId })?.gender == "多音色"
+                        let importedMulti = settings.offlinePackGenders[settings.narrationOfflinePackId] == "multi"
+                        if staticMulti || importedMulti {
                             TextField("说话人编号（多音色包，如 0 / 1 / 2）", value: $settings.narrationOfflineSID, format: .number)
                                 .keyboardType(.numberPad)
                                 .autocorrectionDisabled()
                         }
-                        Text("旁白（叙述部分）将使用所选离线语音包朗读，而不再是系统默认声；角色对话仍按各自性别包分配。需先「启用离线语音包朗读」并下载/导入该包。")
-                            .font(.caption).foregroundColor(.secondary)
                     }
+                    Text("这里同时可选系统声（简体中文只保留 Tingting）与离线导入的语音包；选离线包后，旁白（叙述部分）将用它朗读。需先「启用离线语音包朗读」并下载/导入该包。")
+                        .font(.caption).foregroundColor(.secondary)
                 } header: {
-                    Text("旁白离线语音包（可选 · 解决旁白只能选系统声）")
+                    Text("旁白声音（系统声 + 离线包 · 已合一）")
                 }
 
                 Section {

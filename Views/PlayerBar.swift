@@ -88,28 +88,30 @@ struct PlayerBar: View {
         player.isPlaying ? "stop.fill" : "play.fill"
     }
 
-    // MARK: 速度控制（精度 0.5，点击数值一键回到 1.0×）
+    // MARK: 速度控制（精度 0.25，点击数值一键回到 1.0×）
 
     private var speedControl: some View {
         HStack(spacing: 4) {
-            Button { adjustRate(-0.5) } label: { Image(systemName: "minus.circle") }
+            Button { adjustRate(-0.25) } label: { Image(systemName: "minus.circle") }
                 .buttonStyle(.borderless)
-                .help("语速 -0.5")
+                .help("语速 -0.25")
             Button { player.rate = 1.0 } label: {
-                Text(String(format: "%.1f×", player.rate))
-                    .frame(minWidth: 44, alignment: .center)
+                Text(String(format: "%.2f×", player.rate))
+                    .frame(minWidth: 52, alignment: .center)
             }
             .buttonStyle(.borderless)
             .font(.callout.monospacedDigit())
             .help("点击回到 1.0×")
-            Button { adjustRate(0.5) } label: { Image(systemName: "plus.circle") }
+            Button { adjustRate(0.25) } label: { Image(systemName: "plus.circle") }
                 .buttonStyle(.borderless)
-                .help("语速 +0.5")
+                .help("语速 +0.25")
         }
     }
 
     private func adjustRate(_ delta: Float) {
-        player.rate = min(max(player.rate + delta, 0.5), 3.0)
+        // 以 0.25 为一档，吸附到档位上，避免浮点累积出 1.06 之类的值
+        let stepped = ((player.rate + delta) / 0.25).rounded() * 0.25
+        player.rate = min(max(stepped, 0.5), 3.0)
     }
 
     // MARK: 主播放按钮：播放 / 继续 / 停止

@@ -9,12 +9,29 @@ public struct CharacterRole: Identifiable, Codable {
     public var aliases: [String]          // 合并进来的所有称呼（林风/林兄/那少年/他…）
     public var gender: Gender             // 多角度投票得出
     public var voiceHint: String?         // "male" / "female" / "neutral"，App 端映射到 AVSpeechSynthesisVoice
-    public init(id: String, canonicalName: String, aliases: [String], gender: Gender, voiceHint: String? = nil) {
+    public var identity: RoleIdentity     // 主角/配角/路人（默认配角；旧缓存缺省补 supporting）
+
+    public init(id: String, canonicalName: String, aliases: [String], gender: Gender,
+                voiceHint: String? = nil, identity: RoleIdentity = .supporting) {
         self.id = id
         self.canonicalName = canonicalName
         self.aliases = aliases
         self.gender = gender
         self.voiceHint = voiceHint
+        self.identity = identity
+    }
+
+    // 旧 <docId>.analysis.json 缓存没有 identity 字段 → decodeIfPresent 补默认，避免反序列化整体失败
+    private enum CodingKeys: String, CodingKey { case id, canonicalName, aliases, gender, voiceHint, identity }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        canonicalName = try c.decode(String.self, forKey: .canonicalName)
+        aliases = try c.decode([String].self, forKey: .aliases)
+        gender = try c.decode(Gender.self, forKey: .gender)
+        voiceHint = try c.decodeIfPresent(String.self, forKey: .voiceHint)
+        identity = try c.decodeIfPresent(RoleIdentity.self, forKey: .identity) ?? .supporting
     }
 }
 
@@ -473,7 +490,7 @@ public struct CharacterAnalyzer {
             }
         }
         func hintFor(_ g: Gender) -> String? {
-            switch g { case .male: return "male"; case .female: return "female"; case .neutral: return "neutral" }
+            switch g { case .male, .eunuch: return "male"; case .female: return "female"; case .neutral: return "neutral" }
         }
         /// 解析别名：X兄/老X/X公/X爷 → 基名匹配已有角色
         func resolveAlias(_ raw: String) -> String? {
@@ -706,6 +723,21 @@ public struct CharacterAnalyzer {
 
     /// 将文本切分为旁白段与对话段（对话带其前的叙述文本，用于定位说话人）。
     private func segmentText(_ text: String) -> [Unit] {
+        // 半角双引号规范化：英文/某些排版用 "…"（开=闭=同一字符），原逻辑完全不识别，
+        // 导致「X说:"……"」的引语整段被当旁白。按出现次序交替映射为全角 “ ”，
+        // 之后再走全角分支 → 冒号紧连引号的内容必定进入台词段。
+        var normalized = ""
+        normalized.reserveCapacity(text.count)
+        var halfOpen = true
+        for ch in text {
+            if ch == "\"" {
+                normalized.append(halfOpen ? "“" : "”")
+                halfOpen.toggle()
+            } else {
+                normalized.append(ch)
+            }
+        }
+        let text = normalized
         let open: [Character: Character] = ["「": "」", "“": "”", "‘": "’", "『": "』"]
         var units: [Unit] = []
         var buffer = ""
@@ -927,7 +959,10 @@ public struct CharacterAnalyzer {
         "关切", "沙哑", "平静", "淡淡", "呢喃", "喃喃", "低语", "沉吟", "猛地", "顿时",
         "瞬间", "忽然", "突然", "匆匆", "微微", "缓缓", "默默", "渐渐", "轻轻", "慢慢",
         "点头", "摇头", "开口", "出声", "接口", "应声", "转身", "起身", "皱眉", "挑眉",
-        "咬唇", "沉声", "冷声", "淡声", "小声", "大声", "心中", "心底", "眼底", "笑意"
+        "咬唇", "沉声", "冷声", "淡声", "小声", "大声", "心中", "心底", "眼底", "笑意",
+        // 用户要求：路人泛称不解析为角色（那人/那个人/此人 等，一律台词归旁白）
+        "那人", "那个人", "那个人影", "此人", "该人", "别人", "有人", "某人", "谁人",
+        "来人", "路人", "旁人", "他人", "此人等", "这个人", "那个人们", "其人", "对方"
     ]
 
     /// 去姓名前后称谓/敬语，得到基名（林风兄→林风，老林→林）。
