@@ -157,8 +157,6 @@ final class TTSPlayer: NSObject, ObservableObject {
                 out = out.replacingOccurrences(of: rule.find, with: rule.replace)
             case .skip:
                 out = out.replacingOccurrences(of: rule.find, with: "")
-            case .pause:
-                break   // 停顿不作用于文本层（见全局段落/章节停顿设置）
             }
         }
         return out
