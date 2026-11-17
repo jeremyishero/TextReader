@@ -53,10 +53,14 @@ jobs:
         run: brew install xcodegen
 
       - name: Download bundled voice packs (pre-quantized int8, from Release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 模型已在本机量化并打包上传到 Release（CI 无需 pip/onnxruntime，避免 PEP668 与 wheel 兼容问题）
-          curl -sL --fail -o $RUNNER_TEMP/bundles-int8.zip \
-            https://github.com/jeremyishero/TextReader/releases/download/voicepacks/bundles-int8.zip
+          # 公开 releases/download URL 对本仓库返回 404；改走带认证的 API asset（id 757161433）
+          curl -sL --fail --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            -o $RUNNER_TEMP/bundles-int8.zip \
+            https://api.github.com/repos/jeremyishero/TextReader/releases/assets/757161433
           # zip 内顶层即 BundledVoicePacks/，解压到仓库根目录（勿再套一层）
           mkdir -p BundledVoicePacks
           unzip -q -o $RUNNER_TEMP/bundles-int8.zip -d .
