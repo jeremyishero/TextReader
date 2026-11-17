@@ -220,6 +220,16 @@ struct ReadingView: View {
 
     @ToolbarContentBuilder
     private var readerToolbar: some ToolbarContent {
+        // 从当前阅读位置起播：看了一会儿再听时，不必从头/断点开始
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button {
+                playFromCurrentPage()
+            } label: {
+                Label("从当前页听", systemImage: "playpause.circle")
+            }
+            .disabled(text.isEmpty)
+            .accessibilityLabel("从当前页听")
+        }
         ToolbarItem(placement: .navigationBarTrailing) {
             Button("整体解析") { showModeDialog = true }
                 .disabled(isAnalyzing || text.isEmpty)
@@ -561,6 +571,18 @@ struct ReadingView: View {
     }
 
     // MARK: 播放（全局播放条 / 锁屏控件共用）
+
+    /// 从当前阅读所在段落开始朗读。优先用最近可见段落（手动滚动/朗读位置都会被记录），
+    /// 再映射到当前分段体系（普通分块 or 分声段）的段索引；映射失败则从 0 起播。
+    private func playFromCurrentPage() {
+        let para = highlightIndex ?? lastVisibleParagraph ?? 0
+        let seg = nearestSegmentIndex(forParagraph: para) ?? 0
+        // 显式起点：按当前是否启用分声来定模式，不沿用旧进度里保存的模式
+        pendingStartAnalyzed = player.useAnalyzedPlayback
+        pendingStart = seg
+        startPlayback(from: seg)
+        showToast("从当前页（第 \(para + 1) 段）开始朗读")
+    }
 
     /// 组装声音并从指定段索引开始朗读（全局播放条的「播放/继续」、锁屏控件、目录 ▶︎ 从本章朗读 共用）。
     /// 关键：断点续读必须按「保存时的分声模式」还原分段体系，否则普通分块索引会被套到分声段上（或反之），位置错乱。

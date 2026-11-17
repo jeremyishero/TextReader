@@ -151,13 +151,28 @@ struct AnalysisView: View {
         offlineVoiceOptions = out
     }
 
-    /// 前 10 个角色可单独指定声音
+    /// 角色展示顺序：主角（台词/出场频次最高的名字）排最前，其余按姓名拼音首字母顺序。
+    /// 用台词数(segment 归属次数)近似「出现频次」；拼音用 localizedStandard 比较（简中环境按拼音）。
+    private var sortedRoles: [CharacterRole] {
+        var freq: [String: Int] = [:]
+        for seg in analysis.segments {
+            if let cid = seg.characterId { freq[cid, default: 0] += 1 }
+        }
+        return analysis.roles.sorted { a, b in
+            let fa = freq[a.id] ?? 0
+            let fb = freq[b.id] ?? 0
+            if fa != fb { return fa > fb }                       // 台词多者（主角）在前
+            return a.canonicalName.compare(b.canonicalName, options: [.localizedStandard]) == .orderedAscending
+        }
+    }
+
+    /// 前 10 个角色可单独指定声音（按主角优先+拼音序）
     private var assignableRoles: [CharacterRole] {
-        Array(analysis.roles.prefix(10))
+        Array(sortedRoles.prefix(10))
     }
     /// 当前分页可见的角色
     private var visibleRoles: [CharacterRole] {
-        Array(analysis.roles.prefix(visibleRoleCount))
+        Array(sortedRoles.prefix(visibleRoleCount))
     }
 
     var body: some View {
