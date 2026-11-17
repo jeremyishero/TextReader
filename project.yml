@@ -28,6 +28,7 @@ targets:
           - README.md
           - Info.plist
           - Scripts
+          - BundledVoicePacks   # 必须排除：否则 9 个包的同名文件(lexicon.txt/model.onnx…)平铺冲突
       # 内置语音包（随版本分发，无需用户导入）：folder reference 保持目录结构
       - path: BundledVoicePacks
         type: folder
