@@ -54,7 +54,7 @@ jobs:
 
       - name: Prepare bundled voice packs (int8 quantized)
         run: |
-          pip3 install --quiet onnxruntime onnx
+          pip3 install --break-system-packages --quiet onnxruntime onnx
           python3 Scripts/prepare_bundled_packs.py
           du -sh BundledVoicePacks
 
