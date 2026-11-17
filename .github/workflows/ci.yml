@@ -52,11 +52,16 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Prepare bundled voice packs (int8 quantized)
+      - name: Download bundled voice packs (pre-quantized int8, from Release)
         run: |
-          pip3 install --break-system-packages --quiet onnxruntime onnx
-          python3 Scripts/prepare_bundled_packs.py
+          # 模型已在本机量化并打包上传到 Release（CI 无需 pip/onnxruntime，避免 PEP668 与 wheel 兼容问题）
+          curl -sL --fail -o $RUNNER_TEMP/bundles-int8.zip \
+            https://github.com/jeremyishero/TextReader/releases/download/voicepacks/bundles-int8.zip
+          # zip 内顶层即 BundledVoicePacks/，解压到仓库根目录（勿再套一层）
+          mkdir -p BundledVoicePacks
+          unzip -q -o $RUNNER_TEMP/bundles-int8.zip -d .
           du -sh BundledVoicePacks
+          ls BundledVoicePacks
 
       - name: Generate Xcode project
         run: xcodegen generate
