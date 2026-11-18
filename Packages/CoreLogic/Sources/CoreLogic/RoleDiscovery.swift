@@ -191,6 +191,14 @@ public struct JiebaStyleAnalyzer {
         guard !active.isEmpty else { return [] }
 
         for i in 0..<active.count {
+            // a0) 绰号：段首「小/老/大/阿 + 2字」，独立成候选（小算盘/老狐狸）。
+            //     直接放行，绕开 isNameLike 的姓表与词根门槛——绰号本就不靠姓氏。
+            if i == 0, active.count >= 3, "小老大阿".contains(active[0]) {
+                let nick = String(active[0...2])
+                if isHanString(nick), !generic.contains(nick), !bodyNouns.contains(nick) {
+                    hits.append((0, nick))
+                }
+            }
             // a) 独立姓名：从位置 i 起取 2~4 字，满足「姓开头」或「复姓」或「绰号构词」
             for L in [4, 3, 2] {
                 guard i + L <= active.count else { continue }
