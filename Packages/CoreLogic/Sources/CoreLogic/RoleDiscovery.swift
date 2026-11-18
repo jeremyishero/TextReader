@@ -178,7 +178,12 @@ public struct JiebaStyleAnalyzer {
     /// 把片段切成「词」：这里不做真分词，而是从每个位置尝试抽名词性候选（2~4字）。
     /// 返回 [(位置, 候选)]，候选已过形态门槛。
     private static func nameCandidates(in frag: String) -> [(Int, String)] {
-        let chars = Array(frag)
+        // 剥掉前导非汉字（引号/空白/标点）——跨行时 pre 常带上一句的收尾引号，
+        // 若不剥，「小算盘」的「小」不在段首，绰号/主语判断会失效。
+        var leading = 0
+        let allChars = Array(frag)
+        while leading < allChars.count && !isHan(allChars[leading]) { leading += 1 }
+        let chars = Array(allChars[leading...])
         var hits: [(Int, String)] = []
         // 在言说动词处截断
         var cut = chars.count
