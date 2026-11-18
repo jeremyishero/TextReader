@@ -21,7 +21,7 @@ public struct JiebaStyleAnalyzer {
     嚷 吩咐 补充 低声 喃喃 怒斥 冷哼 说道 喊道 问道 答道 大怒 大喜 一凝 一愣 闻言 点头 摇头
     皱眉 微微 缓缓 忽然 站起 坐下 望着 看向 止住 咳嗽 说出 开口 沉默 思索 又道 接着 转向 走到
     指着 递给 道 说 喊 叫 问 答 叹 喝 笑
-    """.split())
+    """.split(separator: " ").map(String.init))
 
     private static let postVerbs: [String] = {
         let s = "说道 喊道 叫道 答道 叹道 低声道 喃喃道 怒斥道 喝道 笑道 笑骂 说 道 喊 叫 问 答 叹 低声 喃喃 怒斥 喝 笑"
@@ -36,27 +36,27 @@ public struct JiebaStyleAnalyzer {
     黑衣 魔族 妖族 人族 修士 凡人 武者 高手 壮汉 大汉 修仙 修真 阴晴不定 言语 话语 巨猿 妖兽
     灵兽 冰凤 银翅 老妪 老道 老妇人 老翁 大头 紫发 徐姓 某姓 小人 方一 白光 闻听 千秋 白眉
     金光 金焰 老二 翁姓 黄发 宋姓 徐徐 施一礼 灵石 红光 青光 韩兄 小老头 许老怪
-    """.split())
+    """.split(separator: " ").map(String.init))
 
     // 身份后缀：可与姓组成称呼（岳堂主/墨大夫/厉师兄）
     private static let personTitles: Set<String> = Set("""
     堂主 护法 大夫 长老 门主 宗主 掌门 教习 管家 伙计 少爷 公子 先生 大人 老者 少年 少女 姑娘
     夫人 娘子 仙子 道友 师兄 师弟 师姐 师妹 老 爷 公 伯 叔 哥 姐 弟 妹 婆 娘 父 兄 嫂 王 将 相 侯
-    """.split())
+    """.split(separator: " ").map(String.init))
 
     // 身体/感知名词：不拼进人名（挡「韩立目光」）
     private static let bodyNouns: Set<String> = Set("""
     目光 神色 声音 脸色 表情 语气 眼神 身影 举止 言语 话语 心头 心中 脑中 大笑 冷笑 微笑 沉默
     点头 摇头 皱眉 口气 脚步 手掌 肩膀 身躯
-    """.split())
+    """.split(separator: " ").map(String.init))
 
     private static let compoundSurnames: Set<String> = Set("""
     欧阳 太史 端木 上官 司马 东方 独孤 南宫 万俟 闻人 夏侯 诸葛 尉迟 皇甫 宗政 濮阳 公冶 太叔
     申屠 公孙 慕容 仲孙 轩辕 令狐 宇文 长孙 司徒 司空 澹台 公羊 赫连
-    """.split())
+    """.split(separator: " ").map(String.init))
 
     // 泛称指代：不作为正式角色，但绑定说话人
-    private static let refWords: Set<String> = Set("这名老者 那老者 老者 此人 那人 对方".split())
+    private static let refWords: Set<String> = Set("这名老者 那老者 老者 此人 那人 对方".split(separator: " ").map(String.init))
 
     /// 解析专用姓表 = GenderLexicon.surnames ∪ PC 端姓表补集。
     /// 两表互补：GenderLexicon 有「岳」无「墨」，PC 表有「墨」无「岳」；
@@ -78,7 +78,7 @@ public struct JiebaStyleAnalyzer {
     private static let blackRoots: Set<String> = Set("""
     宗 门 谷 山 殿 城 府 阁 楼 院 观 寺 诀 术 剑 丹 符 鼎 铃 旗 镜 钟 天地 江湖 黄昏 清晨
     深夜 此时 此刻 东方 西方 南方 北方
-    """.split())
+    """.split(separator: " ").map(String.init))
 
     // 虚词/动词字：候选片段含这些字 → 不是名词性称呼
     private static let funcChars: Set<Character> = Set("""
@@ -256,7 +256,7 @@ public struct JiebaStyleAnalyzer {
     private static let objectTails: Set<String> = Set("""
     丹 丸 根 步 诀 术 经 典 功 法 阵 符 鼎 剑 刀 枪 甲 袍 衣 鞋 帽 铃 旗 镜 钟 丹药 灵药
     灵根 功法 身法 剑法 拳法 阵法 秘籍 书页 书册 木匣 玉盒 石室 山门 宗门
-    """.split())
+    """.split(separator: " ").map(String.init))
     private static func isNameTail(_ s: String) -> Bool {
         guard isHanString(s), s.count == 2 else { return false }
         if bodyNouns.contains(s) || blackRoots.contains(where: { s.contains($0) }) { return false }
