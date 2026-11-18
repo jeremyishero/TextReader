@@ -685,7 +685,7 @@ struct ReadingView: View {
             OfflineTTSManager.shared.applyDistinctAssignments(orderedRoles: ordered,
                                                               overrides: overridesById)
             // 本书旁白声音（AnalysisView 应用后写入 voiceOverrides 的保留 key），优先于全局设置
-            if let nar = voiceOverrides[DocumentStore.narrationVoiceKey] {
+            if let nar = voiceOverrides[VoicePresetProvider.narrationVoiceKey] {
                 if let preset = VoicePresetProvider.byEncoded(nar) {
                     OfflineTTSManager.shared.setBookNarration((preset.packId, preset.sid))
                 } else if let offline = VoiceChoice.decode(nar) {

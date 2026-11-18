@@ -18,6 +18,10 @@ struct VoicePreset: Identifiable {
 /// - 自动分配：按角色性别（太监→专用池）从「正式+专用」池稳定分配——同一角色永远同一声音；
 /// - 手动选声：以 "preset:<id>" 编码进 voiceOverrides（与系统声/离线包选项并列）。
 enum VoicePresetProvider {
+    /// voiceOverrides 字典里的保留 key：本书旁白声音（优先于全局系统设置）。
+    /// 编码与角色声音一致：preset:<id> / 离线包编码 / 系统声 identifier。
+    /// 放在无 @MainActor 隔离的 enum 里，供离线合成闭包等非隔离上下文访问。
+    static let narrationVoiceKey = "__narration__"
 
     private static var cache: [VoicePreset] = []
     private static var loaded = false

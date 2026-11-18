@@ -174,7 +174,7 @@ struct AnalysisView: View {
             let fa = freq[a.id] ?? 0
             let fb = freq[b.id] ?? 0
             if fa != fb { return fa > fb }                       // 频次高者在前
-            return a.canonicalName.compare(b.canonicalName, options: [.localizedStandard]) == .orderedAscending
+            return a.canonicalName.localizedStandardCompare(b.canonicalName) == .orderedAscending
         }
     }
 
@@ -1029,8 +1029,8 @@ struct AnalysisView: View {
     /// 本书旁白声音（草稿）：优先于系统设置里的全局旁白声。
     private var narrationBinding: Binding<String?> {
         Binding(
-            get: { voiceDraft[DocumentStore.narrationVoiceKey] },
-            set: { voiceDraft[DocumentStore.narrationVoiceKey] = $0 }
+            get: { voiceDraft[VoicePresetProvider.narrationVoiceKey] },
+            set: { voiceDraft[VoicePresetProvider.narrationVoiceKey] = $0 }
         )
     }
 
