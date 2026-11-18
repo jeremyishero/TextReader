@@ -262,33 +262,36 @@ final class TTSPlayer: NSObject, ObservableObject {
 
         var voices: [String: AVSpeechSynthesisVoice] = [:]
         var pitches: [String: Float] = [:]
-        var mi = 0, fi = 0, ni = 0
-        for role in roles {
-            let pitch: Float
-            switch role.gender {
-            case .male, .eunuch:   // 太监走男声池
-                if !malePool.isEmpty {
-                    voices[role.id] = malePool[mi % malePool.count]; mi += 1
+        // 不重复分配：按角色顺序依次占用池内不同音色；池用尽后回退该性别默认声，
+        // 并用递增音高偏移区分，避免大量角色听起来完全一样。
+        func assignPool(_ pool: [AVSpeechSynthesisVoice], genderPitch: Float,
+                        roles: [CharacterRole], used: inout Set<String>) {
+            var cursor = 0
+            for role in roles {
+                if cursor < pool.count {
+                    let v = pool[cursor]; cursor += 1
+                    voices[role.id] = v; pitches[role.id] = genderPitch
+                    used.insert(v.identifier)
+                } else {
+                    // 声音资源用完 → 系统默认声 + 音高递增区分（0.86 ~ 1.22）
+                    let fallback = pool.first ?? poolBase.first
+                    voices[role.id] = fallback
+                    let steps = cursor - pool.count
+                    pitches[role.id] = genderPitch * (0.86 + Float(steps % 5) * 0.09)
+                    cursor += 1
                 }
-                pitch = hadMalePool ? 1.0 : 0.80   // 无男声素材 → 低音高补偿
-            case .female:
-                if !femalePool.isEmpty {
-                    voices[role.id] = femalePool[fi % femalePool.count]; fi += 1
-                }
-                pitch = hadFemalePool ? 1.0 : 1.18 // 无女声素材 → 高音高补偿
-            case .neutral:
-                if !neutralPool.isEmpty {
-                    voices[role.id] = neutralPool[ni % neutralPool.count]; ni += 1
-                }
-                pitch = 1.0
             }
-            pitches[role.id] = pitch
         }
-        // 补漏（池被借空等极端情况）
+        var used = Set<String>()
+        assignPool(malePool,   genderPitch: hadMalePool ? 1.0 : 0.80,
+                   roles: roles.filter { $0.gender == .male || $0.gender == .eunuch }, used: &used)
+        assignPool(femalePool, genderPitch: hadFemalePool ? 1.0 : 1.18,
+                   roles: roles.filter { $0.gender == .female }, used: &used)
+        assignPool(neutralPool, genderPitch: 1.0,
+                   roles: roles.filter { $0.gender == .neutral }, used: &used)
+        // 补漏（极端：完全没有池）
         for role in roles where voices[role.id] == nil {
-            if !poolBase.isEmpty {
-                voices[role.id] = poolBase[abs(role.id.hashValue) % poolBase.count]
-            }
+            if let any = poolBase.first { voices[role.id] = any; pitches[role.id] = 1.0 }
         }
         return (voices, pitches)
     }

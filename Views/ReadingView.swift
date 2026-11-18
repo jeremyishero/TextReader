@@ -526,12 +526,19 @@ struct ReadingView: View {
         player.offlineProvider = { text, gender, characterId in
             guard settings.offlineTTSEnabled else { return nil }
             let speed = player.rate
-            // 旁白（characterId 为空）且用户指定了离线旁白包 → 直接用该包合成（解决「旁白只能选系统几个声音」）
-            if characterId.isEmpty, !settings.narrationOfflinePackId.isEmpty,
-               OfflineTTSManager.shared.isInstalled(settings.narrationOfflinePackId) {
-                return await OfflineTTSManager.shared.synthesizeWithPack(
-                    text: text, packId: settings.narrationOfflinePackId,
-                    sid: Int32(settings.narrationOfflineSID), speed: speed)
+            // 旁白（characterId 为空）：优先本书在角色界面里设置的旁白声，其次全局系统设置。
+            if characterId.isEmpty {
+                let bookNar = OfflineTTSManager.shared.bookNarration
+                let globalPack = settings.narrationOfflinePackId
+                if let bn = bookNar, OfflineTTSManager.shared.isInstalled(bn.packId) {
+                    return await OfflineTTSManager.shared.synthesizeWithPack(
+                        text: text, packId: bn.packId, sid: bn.sid, speed: speed)
+                }
+                if !globalPack.isEmpty, OfflineTTSManager.shared.isInstalled(globalPack) {
+                    return await OfflineTTSManager.shared.synthesizeWithPack(
+                        text: text, packId: globalPack,
+                        sid: Int32(settings.narrationOfflineSID), speed: speed)
+                }
             }
             let maleSIDs = settings.offlineTTSMaleSIDs
                 .split(separator: ",").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
@@ -659,6 +666,36 @@ struct ReadingView: View {
             }
             player.manualOfflinePacks = manualOffline
             player.manualSystemVoiceIds = manualSystem
+
+            // 不重复的音色分配：按频次降序（主角先）为全部角色依次占用不同音色，
+            // 音色用尽者回退系统默认声。手动指定的角色优先占用其选择。
+            var freq: [String: Int] = [:]
+            for seg in a.segments { if let cid = seg.characterId { freq[cid, default: 0] += 1 } }
+            let ordered = a.roles.sorted { l, r in
+                if l.identity != r.identity {
+                    if l.identity == .protagonist { return true }
+                    if r.identity == .protagonist { return false }
+                }
+                return (freq[l.id] ?? 0) > (freq[r.id] ?? 0)
+            }.map { (id: $0.id, gender: $0.gender) }
+            var overridesById: [String: String] = [:]
+            for role in a.roles {
+                if let choice = voiceOverrides[role.canonicalName] { overridesById[role.id] = choice }
+            }
+            OfflineTTSManager.shared.applyDistinctAssignments(orderedRoles: ordered,
+                                                              overrides: overridesById)
+            // 本书旁白声音（AnalysisView 应用后写入 voiceOverrides 的保留 key），优先于全局设置
+            if let nar = voiceOverrides[DocumentStore.narrationVoiceKey] {
+                if let preset = VoicePresetProvider.byEncoded(nar) {
+                    OfflineTTSManager.shared.setBookNarration((preset.packId, preset.sid))
+                } else if let offline = VoiceChoice.decode(nar) {
+                    OfflineTTSManager.shared.setBookNarration((offline.packId, offline.sid))
+                } else {
+                    OfflineTTSManager.shared.setBookNarration(nil)  // 跟随系统设置
+                }
+            } else {
+                OfflineTTSManager.shared.setBookNarration(nil)
+            }
 
             // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
             let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)

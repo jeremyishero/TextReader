@@ -73,9 +73,47 @@ enum VoicePresetProvider {
     }
 
     /// 手动选声选项（AnalysisView）：「预设｜音色名」，编码为 preset:<id>。
+    /// 含 primary+special+standby 全部启用音色——让所有角色都能选到声音，不再局限于正式池。
     static func manualOptions() -> [(id: String, name: String)] {
-        all().filter { $0.enabled && ($0.tier == "primary" || $0.tier == "special") }
-            .map { ("preset:" + $0.id, "预设｜" + $0.label) }
+        all().filter { $0.enabled }
+            .map { ("preset:" + $0.id, "预设｜" + $0.label + ($0.tier == "standby" ? "（备用）" : "")) }
+    }
+
+    /// 不重复的全局音色分配：按传入角色顺序，为每类音色依次分配一个未被占用的预设。
+    /// 同一角色稳定（外部按稳定排序的角色列表调用）；音色用完则为 nil（调用方回退系统默认声）。
+    /// - Parameters:
+    ///   - orderedRoles: 已按频次降序排好的 (id, gender)；主角在前。
+    ///   - overrides: 用户手动指定的角色音色（preset:<id>），这些角色占用其指定音色且不再参与自动分配。
+    /// - Returns: 角色 id → (packId, sid, speed, label)；未分配的角色不在字典中（回退系统默认）。
+    static func assignDistinct(orderedRoles: [(id: String, gender: Gender)],
+                               overrides: [String: String] = [:])
+        -> [String: (packId: String, sid: Int32, speed: Float, label: String)] {
+        let enabled = all().filter { $0.enabled }
+        func pool(for g: Gender) -> [VoicePreset] {
+            switch g {
+            case .eunuch: return enabled.filter { $0.gender == .eunuch }
+            case .male:   return enabled.filter { $0.gender == .male || $0.gender == .eunuch }
+            case .female: return enabled.filter { $0.gender == .female }
+            case .neutral: return []
+            }
+        }
+        var result: [String: (packId: String, sid: Int32, speed: Float, label: String)] = [:]
+        var used = Set<String>()   // 已占用的 preset.id，保证不同角色不同音色
+        // 先落实手动指定：按角色顺序，指定音色即占用
+        for r in orderedRoles {
+            if let code = overrides[r.id], let p = byEncoded(code) {
+                result[r.id] = (p.packId, p.sid, p.speed, p.label)
+                used.insert(p.id)
+            }
+        }
+        // 再自动分配未指定的角色：按频次顺序依次取该性别池里未被占用的第一个
+        // 池用尽 → 该角色不分配（外部回退系统默认声）
+        for r in orderedRoles where result[r.id] == nil {
+            guard let p = pool(for: r.gender).first(where: { !used.contains($0.id) }) else { continue }
+            result[r.id] = (p.packId, p.sid, p.speed, p.label)
+            used.insert(p.id)
+        }
+        return result
     }
 
     /// 由 voiceOverrides 的编码还原预设。

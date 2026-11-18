@@ -130,6 +130,13 @@ public struct CharacterAnalyzer {
         if GenderLexicon.surnames.contains(String(chars[0])) { return s.count <= 3 }
         if chars.count >= 2, "阿小老".contains(chars[0]),
            GenderLexicon.surnames.contains(String(chars[1])) { return s.count <= 3 }
+        // 绰号：昵称前缀(小/老) + 2 字，尾字为实体名词（算盘/胖子…）而非名用字。
+        // 靠 analyze 主循环的说话位置 + 频次门槛过滤误报，不在这里逐词枚举。
+        if chars.count == 3, "小老".contains(chars[0]) {
+            let tail = chars[1...]
+            let allNotGivenName = tail.allSatisfy { !Self.isGivenNameChar($0) && !Self.isNameChar($0) }
+            if allNotGivenName { return true }   // 小算盘 / 老狐狸
+        }
         return false
     }
 
@@ -223,7 +230,10 @@ public struct CharacterAnalyzer {
         "男","公主","郡主","格格","福晋","贵妃","妃","皇后","太后","才人","美人","常在","答应","夫人",
         "小姐","姑娘","丫鬟","丫头","嬷嬷","宫女","尼姑","师太","仙子","女侠","淑女","秀女","娘子",
         "姐","妹","嫂","姑","婆","姨","婶","媳","女儿","姊","娘","妈","妇","妾","妻","女","女王",
-        "大娘","大婶","大姐","大哥","大叔","大爷","殿下"
+        "大娘","大婶","大姐","大哥","大叔","大爷","殿下",
+        // 修仙/门派称谓（凡人修仙传等验证：岳堂主、墨大夫、王护法、赵长老…）
+        "堂主","护法","长老","门主","宗主","教习","掌门","师兄","师叔","师伯","师姐","师妹",
+        "仙长","道友","真君","圣祖","老祖","少主","帮主","寨主","阁主","楼主","谷主"
     ]
     /// 完整官职名（含部名，四字）：吏部尚书、礼部尚书、兵部尚书…
     static let ministryTitles: [String] = [
@@ -298,7 +308,9 @@ public struct CharacterAnalyzer {
     }
 
     /// 去除姓名前后称谓/敬语，得到基名。
-    private let trailingTitles = ["娘子","丫鬟","少爷","老爷","夫人","王爷","相公","女侠","仙子","侠士","老爷子","公主","郡主","皇后","太后","妃","妾","妻","姊","妹","嫂","姑","婆","姨","婶","媳","女儿","姐","弟","叔","伯","舅","父","夫","兄","哥","郎","爹","爸","爷","子","婿","郎君","将军","殿下"]
+    private let trailingTitles = ["娘子","丫鬟","少爷","老爷","夫人","王爷","相公","女侠","仙子","侠士","老爷子","公主","郡主","皇后","太后","妃","妾","妻","姊","妹","嫂","姑","婆","姨","婶","媳","女儿","姐","弟","叔","伯","舅","父","夫","兄","哥","郎","爹","爸","爷","子","婿","郎君","将军","殿下",
+        // 修仙门派称谓（厉师兄/岳堂主/王护法…）；长的在前保证优先剥离
+        "师兄","师叔","师伯","师姐","师妹","堂主","护法","长老","门主","宗主","教习","掌门","少主","真君"]
     /// 描述词 → 性别（那少年 / 那女子 等）
     private let descriptorGender: [String: Gender] = [
         "那少年": .male, "那书生": .male, "那公子": .male, "那青年": .male, "那老者": .male, "这少年": .male, "那汉子": .male,
@@ -509,6 +521,15 @@ public struct CharacterAnalyzer {
                 if role.canonicalName.hasPrefix(base) || role.aliases.contains(where: { $0.hasPrefix(base) }) {
                     return role.id
                 }
+            }
+            // 同姓身份称谓兜底：「厉师兄」剥成单字姓「厉」后，若书中【只有一个】厉姓具名角色
+            // （厉飞雨），则归并为同一人。同姓多角色（墨大夫/墨彩环）不归并，避免误合。
+            if base.count == 1 {
+                let sameSurname = roles.filter { r in
+                    r.canonicalName.hasPrefix(base) && r.canonicalName.count >= 2
+                        && !Self.bareTitles.contains(r.canonicalName)
+                }
+                if sameSurname.count == 1 { return sameSurname[0].id }
             }
             return nil
         }

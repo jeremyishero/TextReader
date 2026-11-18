@@ -393,6 +393,47 @@ final class OfflineTTSManager: ObservableObject {
     private var presetSpeeds: [String: Float] = [:]
     /// 同性别池轮转游标（保证不同角色分到不同声音）
     private var rotationCursor: [String: Int] = [:]
+    /// 本书旁白声音覆盖（优先于全局系统设置的旁白声）。由 AnalysisView「应用」写入。
+    private(set) var bookNarration: (packId: String, sid: Int32)? = nil
+    func setBookNarration(_ value: (packId: String, sid: Int32)?) {
+        bookNarration = value
+    }
+
+    /// 起播时一次性为全部角色做「不重复」音色分配：按传入顺序（频次降序，主角先）依次占用
+    /// 不同音色；音色用尽则跳过该角色（朗读时回退系统默认声）。手动指定的角色优先占用其音色。
+    /// 结果写入 roleAssignments/presetSpeeds，后续每段台词直接命中缓存，声音全程稳定。
+    /// - Returns: 未分配到内置音色的角色 id 集合（这些角色朗读时回退系统默认声）。
+    @discardableResult
+    func applyDistinctAssignments(orderedRoles: [(id: String, gender: Gender)],
+                                  overrides: [String: String]) -> Set<String> {
+        let installed = Set(installedPacks().map(\.id))
+        let presetResult = VoicePresetProvider.assignDistinct(orderedRoles: orderedRoles,
+                                                              overrides: overrides)
+        var assigned = Set<String>()
+        engineQueue.async { [weak self] in
+            guard let self else { return }
+            // 手动指定（系统声 identifier / 非预设编码）不在此处理，交给 TTSPlayer 侧
+            for (rid, val) in overrides {
+                if let p = VoicePresetProvider.byEncoded(val), installed.contains(p.packId) {
+                    self.roleAssignments[rid] = (p.packId, p.sid)
+                    self.presetSpeeds[rid] = p.speed
+                    assigned.insert(rid)
+                }
+            }
+            for r in orderedRoles where !overrides.keys.contains(r.id) {
+                if let a = presetResult[r.id], installed.contains(a.packId) {
+                    self.roleAssignments[r.id] = (a.packId, a.sid)
+                    self.presetSpeeds[r.id] = a.speed
+                    assigned.insert(r.id)
+                } else {
+                    // 音色用完 / 包未安装：清掉旧缓存，确保回退系统默认声
+                    self.roleAssignments.removeValue(forKey: r.id)
+                    self.presetSpeeds.removeValue(forKey: r.id)
+                }
+            }
+        }
+        return Set(orderedRoles.map(\.id)).subtracting(assigned)
+    }
 
     /// 角色合成入口：按性别池轮转分配——单音色性别包池 → 多音色包(编号列表) → nil（回退云端/本地）。
     /// 同一角色固定分配；不同角色依次取池内不同包/不同编号，实现「多个男角色不同男声、多个女角色不同女声」。

@@ -90,6 +90,13 @@ struct AnalysisView: View {
     @State private var multiSelectMode = false
     @State private var selectedRoleIds: Set<String> = []
     @State private var showMultiDeleteConfirm = false
+    // 声音配置草稿：Picker 改动先写入草稿，点右上角「应用」才真正保存到本书（含旁白声音）
+    @State private var voiceDraft: [String: String] = [:]
+    @State private var didInitVoiceDraft = false
+    // 角色查找
+    @State private var showRoleSearch = false
+    @State private var roleSearchText = ""
+    @State private var showAppliedToast = false
 
     private enum DeleteTarget {
         case role(CharacterRole)
@@ -151,28 +158,41 @@ struct AnalysisView: View {
         offlineVoiceOptions = out
     }
 
-    /// 角色展示顺序：主角（台词/出场频次最高的名字）排最前，其余按姓名拼音首字母顺序。
-    /// 用台词数(segment 归属次数)近似「出现频次」；拼音用 localizedStandard 比较（简中环境按拼音）。
+    /// 角色展示顺序：主角（台词频次最高/identity=主角）排最前，其余按频次从大到小。
+    /// 用台词数(segment 归属次数)近似「出现频次」；频次相同按拼音(简中 localizedStandard)。
     private var sortedRoles: [CharacterRole] {
         var freq: [String: Int] = [:]
         for seg in analysis.segments {
             if let cid = seg.characterId { freq[cid, default: 0] += 1 }
         }
         return analysis.roles.sorted { a, b in
+            // 显式标为主角的角色绝对优先
+            if a.identity != b.identity {
+                if a.identity == .protagonist { return true }
+                if b.identity == .protagonist { return false }
+            }
             let fa = freq[a.id] ?? 0
             let fb = freq[b.id] ?? 0
-            if fa != fb { return fa > fb }                       // 台词多者（主角）在前
+            if fa != fb { return fa > fb }                       // 频次高者在前
             return a.canonicalName.compare(b.canonicalName, options: [.localizedStandard]) == .orderedAscending
         }
     }
 
-    /// 前 10 个角色可单独指定声音（按主角优先+拼音序）
-    private var assignableRoles: [CharacterRole] {
-        Array(sortedRoles.prefix(10))
+    /// 所有角色都可单独指定声音（按主角优先+频次序）
+    private var assignableRoles: [CharacterRole] { sortedRoles }
+    /// 搜索命中的角色（主名或别名包含关键字）
+    private var searchedRoles: [CharacterRole] {
+        let q = roleSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return sortedRoles }
+        return sortedRoles.filter { r in
+            r.canonicalName.contains(q) || r.aliases.contains { $0.contains(q) }
+        }
     }
-    /// 当前分页可见的角色
+    /// 当前分页可见的角色（搜索时不再分页，直接列出全部命中）
     private var visibleRoles: [CharacterRole] {
-        Array(sortedRoles.prefix(visibleRoleCount))
+        roleSearchText.isEmpty
+            ? Array(sortedRoles.prefix(visibleRoleCount))
+            : searchedRoles
     }
 
     var body: some View {
@@ -204,8 +224,31 @@ struct AnalysisView: View {
             }
             .navigationTitle("解析结果")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("应用") { applyChanges() }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .onAppear {
+                if !didInitVoiceDraft {
+                    voiceDraft = voiceOverrides
+                    didInitVoiceDraft = true
+                }
+            }
             .task { refreshOfflineVoiceOptions() }
             .onChange(of: offlineMgr.revision) { _ in refreshOfflineVoiceOptions() }
+            .overlay(alignment: .top) {
+                if showAppliedToast {
+                    Text("已应用到本书")
+                        .font(.caption).padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                        .onAppear {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { showAppliedToast = false }
+                        }
+                        .padding(.top, 8)
+                }
+            }
             .sheet(isPresented: $showEditSheet) {
                 editRoleSheet
             }
@@ -413,6 +456,48 @@ struct AnalysisView: View {
                 }
             }
             if !multiSelectMode {
+                // 查找角色：点放大镜展开搜索框，主名/别名均可查
+                HStack(spacing: 6) {
+                    if showRoleSearch {
+                        TextField("查找角色（主名或别名）", text: $roleSearchText)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                        Button {
+                            roleSearchText = ""
+                            showRoleSearch = false
+                        } label: {
+                            Image(systemName: "xmark.circle.fill").font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                    } else {
+                        Button {
+                            showRoleSearch = true
+                        } label: {
+                            Label("查找", systemImage: "magnifyingglass").font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                if showRoleSearch && !roleSearchText.isEmpty {
+                    Text("命中 \(searchedRoles.count) 个角色")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                // 本书旁白声音：优先于系统设置里的全局旁白声
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("本书旁白声音（优先于系统设置）")
+                        .font(.caption2).foregroundColor(.secondary)
+                    Picker("旁白声音", selection: narrationBinding) {
+                        Text("跟随系统设置").tag(String?.none)
+                        ForEach(voiceOptions, id: \.identifier) { v in
+                            Text(v.name).tag(String?.some(v.identifier))
+                        }
+                        ForEach(offlineVoiceOptions) { opt in
+                            Text(opt.name).tag(String?.some(opt.id))
+                        }
+                    }
+                    .font(.caption)
+                }
+                .padding(.vertical, 4)
                 HStack {
                     Button {
                         showImportSheet = true
@@ -549,9 +634,9 @@ struct AnalysisView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
-            // 前 10 个角色可单独选择声音（多选模式下隐藏）
-            // 数据源 = 系统声 + 已下载/已导入的离线包，二者统一编码进 voiceOverrides
-            if !multiSelectMode, index < 10,
+            // 所有角色都可单独选择声音（不再限制前 10 个）。
+            // 声音资源（48 预设 + 系统声 + 离线包）用完时，未指定的角色自动回退系统默认声。
+            if !multiSelectMode,
                !voiceOptions.isEmpty || !offlineVoiceOptions.isEmpty {
                 HStack(spacing: 8) {
                     Picker("声音", selection: voiceBinding(for: role)) {
@@ -934,18 +1019,31 @@ struct AnalysisView: View {
 
     private func voiceBinding(for role: CharacterRole) -> Binding<String?> {
         Binding(
-            get: { voiceOverrides[role.canonicalName] },
+            get: { voiceDraft[role.canonicalName] },
             set: { newValue in
-                var updated = voiceOverrides
-                updated[role.canonicalName] = newValue
-                onVoiceChanged?(updated)
+                voiceDraft[role.canonicalName] = newValue
             }
         )
     }
 
+    /// 本书旁白声音（草稿）：优先于系统设置里的全局旁白声。
+    private var narrationBinding: Binding<String?> {
+        Binding(
+            get: { voiceDraft[DocumentStore.narrationVoiceKey] },
+            set: { voiceDraft[DocumentStore.narrationVoiceKey] = $0 }
+        )
+    }
+
+    /// 点右上角「应用」：把声音草稿（含旁白）一次性保存到本书，并触发解析结果落盘。
+    private func applyChanges() {
+        onVoiceChanged?(voiceDraft)
+        onEdited?()
+        showAppliedToast = true
+    }
+
     /// 预听该角色当前生效的声音：手动指定离线包 → 离线合成试听；系统声/自动分配 → AVSpeech 试听。
     private func previewVoice(for role: CharacterRole) {
-        let chosen = voiceOverrides[role.canonicalName]
+        let chosen = voiceDraft[role.canonicalName]
         // 手工选了离线包：直接用该包 + 编号合成一句试听，走 VoicePreviewer 的音频播放通道
         if let chosen, let offline = VoiceChoice.decode(chosen) {
             Task { @MainActor in
@@ -1049,12 +1147,10 @@ struct AnalysisView: View {
         if old != newName, !analysis.roles[idx].aliases.contains(old) {
             analysis.roles[idx].aliases.append(old)
         }
-        // 称呼变化：把该角色的手工声音覆盖（按旧称呼 key）迁移到新称呼，避免静默失效
-        if old != newName, let v = voiceOverrides[old] {
-            var updated = voiceOverrides
-            updated.removeValue(forKey: old)
-            updated[newName] = v
-            onVoiceChanged?(updated)
+        // 称呼变化：把该角色的手工声音覆盖（按旧称呼 key）迁移到新称呼，避免静默失效（草稿内迁移，应用时统一保存）
+        if old != newName, let v = voiceDraft[old] {
+            voiceDraft.removeValue(forKey: old)
+            voiceDraft[newName] = v
         }
         // 性别变化：清掉离线语音包分配缓存，下次朗读按新性别重新匹配声音
         if genderChanged {
