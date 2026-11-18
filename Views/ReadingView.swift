@@ -802,7 +802,7 @@ struct ReadingView: View {
                 let blocklist = combinedBlocklist
                 let allowlist = combinedWhitelist
                 result = await Task.detached(priority: .userInitiated) {
-                    CharacterAnalyzer().analyze(src, userStopwords: blocklist, userWhitelist: allowlist)
+                    JiebaStyleAnalyzer().analyze(src, userStopwords: blocklist, userWhitelist: allowlist)
                 }.value
             }
             guard !Task.isCancelled else { return }
