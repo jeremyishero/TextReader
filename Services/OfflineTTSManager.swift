@@ -380,9 +380,11 @@ final class OfflineTTSManager: ObservableObject {
         let dir = packDir(packId).path
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
-                guard let self else { cont.resume(returning: nil); return }
-                let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
-                cont.resume(returning: data)
+                autoreleasepool {
+                    guard let self else { cont.resume(returning: nil); return }
+                    let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
+                    cont.resume(returning: data)
+                }
             }
         }
     }
@@ -447,20 +449,25 @@ final class OfflineTTSManager: ObservableObject {
         let installedIds = installedPacks().map(\.id)
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
-                guard let self else { cont.resume(returning: nil); return }
-                let plan = self.assign(characterId: characterId, gender: gender,
-                                       packGenders: packGenders, installedIds: installedIds,
-                                       maleSIDs: maleSIDs, femaleSIDs: femaleSIDs)
-                guard let (packId, sid) = plan, self.isInstalled(packId) else {
-                    self.reportOfflineError("自动分配未选中任何语音包（检查：离线总开关是否打开、导入包是否已标注性别、包是否已安装）")
-                    cont.resume(returning: nil); return
+                // 合成产生大量临时 Data/数组 + C 层推理内存；无 autoreleasepool 时这些
+                // 临时对象要到队列线程下次 drain 才释放，长时间朗读会堆积到被系统 jetsam 杀掉
+                // ——表现即「听着听着 App 自动退出」。每段合成结束立即 drain。
+                autoreleasepool {
+                    guard let self else { cont.resume(returning: nil); return }
+                    let plan = self.assign(characterId: characterId, gender: gender,
+                                           packGenders: packGenders, installedIds: installedIds,
+                                           maleSIDs: maleSIDs, femaleSIDs: femaleSIDs)
+                    guard let (packId, sid) = plan, self.isInstalled(packId) else {
+                        self.reportOfflineError("自动分配未选中任何语音包（检查：离线总开关是否打开、导入包是否已标注性别、包是否已安装）")
+                        cont.resume(returning: nil); return
+                    }
+                    let dir = self.packDir(packId).path
+                    // 预设联动：预设自带语速倍率（童年稍快/老年稍慢）与用户语速相乘
+                    let presetMul = self.presetSpeeds[characterId] ?? 1.0
+                    let data = self.synthWithFallback(text: text, packId: packId, dir: dir,
+                                                      sid: sid, speed: speed * presetMul)
+                    cont.resume(returning: data)
                 }
-                let dir = self.packDir(packId).path
-                // 预设联动：预设自带语速倍率（童年稍快/老年稍慢）与用户语速相乘
-                let presetMul = self.presetSpeeds[characterId] ?? 1.0
-                let data = self.synthWithFallback(text: text, packId: packId, dir: dir,
-                                                  sid: sid, speed: speed * presetMul)
-                cont.resume(returning: data)
             }
         }
     }
@@ -472,9 +479,11 @@ final class OfflineTTSManager: ObservableObject {
         let dir = packDir(packId).path
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
-                guard let self else { cont.resume(returning: nil); return }
-                let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
-                cont.resume(returning: data)
+                autoreleasepool {
+                    guard let self else { cont.resume(returning: nil); return }
+                    let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
+                    cont.resume(returning: data)
+                }
             }
         }
     }

@@ -151,6 +151,8 @@ struct ReadingView: View {
                     onVoiceChanged: { assignments in
                         voiceOverrides = assignments
                         store.saveVoiceConfig(assignments, for: item.id)
+                        // 立即生效：旁白声音改动后不必停播重起（离线合成闭包实时读 bookNarration）
+                        applyBookNarration()
                     },
                     onImportConfig: { sourceDoc in
                         // 从其他文档导入人物配置：按角色称呼匹配，只影响当前文档
@@ -671,6 +673,23 @@ struct ReadingView: View {
         showToast("从当前页（第 \(para + 1) 段）开始朗读")
     }
 
+    /// 把本书旁白声音配置即时注入离线合成器。
+    /// 支持三类编码：preset:<id> / 离线包编码 VoiceChoice / 系统声 identifier（后者回退为 nil=跟随系统）。
+    /// 起播时与 AnalysisView「应用」时都会调用，保证改完立刻生效、不必停播重起。
+    private func applyBookNarration() {
+        guard let nar = voiceOverrides[VoicePresetProvider.narrationVoiceKey] else {
+            OfflineTTSManager.shared.setBookNarration(nil)
+            return
+        }
+        if let preset = VoicePresetProvider.byEncoded(nar) {
+            OfflineTTSManager.shared.setBookNarration((preset.packId, preset.sid))
+        } else if let offline = VoiceChoice.decode(nar) {
+            OfflineTTSManager.shared.setBookNarration((offline.packId, offline.sid))
+        } else {
+            OfflineTTSManager.shared.setBookNarration(nil)
+        }
+    }
+
     /// 组装声音并从指定段索引开始朗读（全局播放条的「播放/继续」、锁屏控件、目录 ▶︎ 从本章朗读 共用）。
     /// 关键：断点续读必须按「保存时的分声模式」还原分段体系，否则普通分块索引会被套到分声段上（或反之），位置错乱。
     private func startPlayback(from index: Int? = nil) {
@@ -780,18 +799,8 @@ struct ReadingView: View {
             }
             OfflineTTSManager.shared.applyDistinctAssignments(orderedRoles: ordered,
                                                               overrides: overridesById)
-            // 本书旁白声音（AnalysisView 应用后写入 voiceOverrides 的保留 key），优先于全局设置
-            if let nar = voiceOverrides[VoicePresetProvider.narrationVoiceKey] {
-                if let preset = VoicePresetProvider.byEncoded(nar) {
-                    OfflineTTSManager.shared.setBookNarration((preset.packId, preset.sid))
-                } else if let offline = VoiceChoice.decode(nar) {
-                    OfflineTTSManager.shared.setBookNarration((offline.packId, offline.sid))
-                } else {
-                    OfflineTTSManager.shared.setBookNarration(nil)  // 跟随系统设置
-                }
-            } else {
-                OfflineTTSManager.shared.setBookNarration(nil)
-            }
+            // 本书旁白声音（优先于全局设置）；与「应用」按钮共用同一套注入逻辑
+            applyBookNarration()
 
             // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
             let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)

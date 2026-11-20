@@ -96,6 +96,9 @@ public struct JiebaStyleAnalyzer {
         var pre: String
         var post: String
         var text: String
+        /// 正双引号紧前面是否有冒号（：/:）——只有「韩立说道：“…”」这种才是角色对话；
+        /// 无冒号的引号内容（如强调、书名号式引用）按旁白读，不切换角色声音。
+        var hasColon: Bool = false
     }
 
     private static func isHan(_ c: Character) -> Bool {
@@ -167,7 +170,10 @@ public struct JiebaStyleAnalyzer {
             let limit = min(n, qend + 20)
             while pe < limit && !postStop.contains(chars[pe]) { pe += 1 }
             let post = String(chars[qend..<pe]).trimmingCharacters(in: .whitespaces)
-            res.append(Dialogue(pre: pre, post: post, text: qtext))
+            // 正引号前面紧邻的字符必须是冒号（：或 :），才是「某人说道：“…”」的角色对话。
+            // 无冒号的引号内容（引用/强调/书名）按旁白处理，不切换角色声音。
+            let hasColon = i > 0 && (chars[i - 1] == "：" || chars[i - 1] == ":")
+            res.append(Dialogue(pre: pre, post: post, text: qtext, hasColon: hasColon))
             i = qend
         }
         return res
@@ -444,8 +450,10 @@ public struct JiebaStyleAnalyzer {
         }
         elder.sort { (scoreByName[$0] ?? 0) > (scoreByName[$1] ?? 1) }
 
-        // 构建角色对象（按频次 bind 降序，主角/高频在前）
-        let ordered = scored.sorted { $0.bind > $1.bind }
+        // 构建角色对象（按台词/对话次数 bind 降序，主角/高频在前）
+        // 只保留前 48 个角色：其余低频角色丢弃——它们的台词在下面归属时因 idByName 无条目，
+        // 自动落成旁白(nil)，不会因角色过多导致声音分配紧张、列表过长。
+        let ordered = Array(scored.sorted { $0.bind > $1.bind }.prefix(48))
         var roles: [CharacterRole] = []
         var idByName: [String: String] = [:]
         for (idx, s) in ordered.enumerated() {
@@ -463,6 +471,13 @@ public struct JiebaStyleAnalyzer {
         var lastNamed: String? = nil
         var pos = 0
         for d in dialogues {
+            // 无冒号引号：按旁白读，不识别为任何角色台词、不切换声音
+            guard d.hasColon else {
+                segments.append(SpeechSegment(id: "seg_\(pos)", text: d.text,
+                                              characterId: nil, emotion: .neutral, position: pos))
+                pos += 1
+                continue
+            }
             var sp: String? = nil
             if let h = Self.nameCandidates(in: d.post).first { sp = h.1 }
             if sp == nil, let h = Self.nameCandidates(in: d.pre).first { sp = h.1 }

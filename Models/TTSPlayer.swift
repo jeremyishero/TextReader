@@ -528,18 +528,31 @@ final class TTSPlayer: NSObject, ObservableObject {
         prefetch(from: idx + 1)
     }
 
-    /// 给异步任务加超时：超时返回 nil，不取消原任务（后台仍可继续）。
+    /// 给异步任务加超时：超时立即返回 nil，不等待原任务（原任务后台继续但不阻塞朗读）。
+    /// 注意：不能用 withTaskGroup——它的 body 结束时会等待所有子任务，超时里 cancelAll 对
+    /// 不响应取消的 engineQueue 合成无效，导致「8秒超时」形同虚设、引擎卡住仍永久无声。
     private static func withTimeout<T>(seconds: Double,
                                        operation: @escaping () async -> T?) async -> T? {
-        await withTaskGroup(of: T?.self) { group in
-            group.addTask { await operation() }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return nil
+        await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+            let lock = NSLock()
+            var finished = false
+            func deliver(_ value: T?) {
+                lock.lock()
+                if finished { lock.unlock(); return }
+                finished = true
+                lock.unlock()
+                cont.resume(returning: value)
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+            // 真正的合成任务
+            Task {
+                let v = await operation()
+                deliver(v)
+            }
+            // 超时竞速：先到者胜
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                deliver(nil)
+            }
         }
     }
 
@@ -695,6 +708,11 @@ final class TTSPlayer: NSObject, ObservableObject {
             return
         }
         do {
+            // 覆盖旧播放器前先停掉并摘除 delegate：
+            // 旧实例的 didFinish 回调若延迟到达，会走 audioPlayerDidFinishPlaying→advance，
+            // 与新段重复推进/串音；delegate 未摘除时旧对象还可能被回调访问。
+            audioPlayer?.stop()
+            audioPlayer?.delegate = nil
             let p = try AVAudioPlayer(data: data)
             p.delegate = self
             audioPlayer = p

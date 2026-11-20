@@ -659,6 +659,9 @@ struct AnalysisView: View {
                     }
                     .buttonStyle(.borderless)
                 }
+                // 吞掉声音区域的长按，避免滚动 Picker 时触发父视图的多选手势
+                // （否则视图重建会把 Picker 弹回当前选中项，划到哪定不到哪）
+                .onLongPressGesture {}
             }
         }
         .padding(.vertical, 2)
