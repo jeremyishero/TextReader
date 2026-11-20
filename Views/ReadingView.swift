@@ -67,7 +67,10 @@ struct ReadingView: View {
                             ForEach(paragraphs.indices, id: \.self) { idx in
                                 ParagraphRow(text: paragraphs[idx],
                                              isHighlighted: highlightIndex == idx,
-                                             index: idx)
+                                             index: idx,
+                                             onPlayFromHere: {
+                                                playFromParagraph(idx)
+                                             })
                                     // 手动滚动阅读时记录可见段落；朗读中由 onReceive 的高亮链路负责，避免互相覆盖
                                     .onAppear {
                                         if !player.isPlaying { lastVisibleParagraph = idx }
@@ -220,6 +223,29 @@ struct ReadingView: View {
 
     @ToolbarContentBuilder
     private var readerToolbar: some ToolbarContent {
+        // 章节目录：不依赖是否正在播放——纯阅读时也能打开选章
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button { showTOC = true } label: {
+                Label("目录", systemImage: "list.bullet")
+            }
+            .disabled(chapterList.isEmpty)
+            .accessibilityLabel("目录")
+        }
+        // 上一章 / 下一章：阅读与播放通用跳转
+        ToolbarItem(placement: .navigationBarLeading) {
+            HStack(spacing: 4) {
+                Button { jumpChapter(delta: -1) } label: {
+                    Image(systemName: "chevron.left.2")
+                }
+                .disabled(!canJumpChapter(-1))
+                .accessibilityLabel("上一章")
+                Button { jumpChapter(delta: 1) } label: {
+                    Image(systemName: "chevron.right.2")
+                }
+                .disabled(!canJumpChapter(1))
+                .accessibilityLabel("下一章")
+            }
+        }
         // 从当前阅读位置起播：看了一会儿再听时，不必从头/断点开始
         ToolbarItem(placement: .navigationBarTrailing) {
             Button {
@@ -335,15 +361,46 @@ struct ReadingView: View {
         }
     }
 
-    /// 当前朗读位置所在章节（段落索引）
+    /// 当前朗读/阅读位置所在章节（段落索引）。无高亮时取上次可见段落，再退回第一章。
     private var currentChapterParagraph: Int? {
-        guard let h = highlightIndex else { return nil }
-        return chapterList.filter { $0.index <= h }.last?.index
+        let h = highlightIndex ?? lastVisibleParagraph ?? 0
+        return chapterList.filter { $0.index <= h }.last?.index ?? chapterList.first?.index
+    }
+
+    /// 当前章在 chapterList 中的下标
+    private var currentChapterListIndex: Int? {
+        guard let para = currentChapterParagraph else { return nil }
+        return chapterList.firstIndex { $0.index == para }
+    }
+
+    private func canJumpChapter(_ delta: Int) -> Bool {
+        guard let i = currentChapterListIndex else { return false }
+        return chapterList.indices.contains(i + delta)
+    }
+
+    /// 上一章/下一章：跳转阅读位置；若正在朗读，同步从新章节起播。
+    private func jumpChapter(delta: Int) {
+        guard let i = currentChapterListIndex,
+              chapterList.indices.contains(i + delta) else { return }
+        let ch = chapterList[i + delta]
+        highlightIndex = ch.index
+        lastVisibleParagraph = ch.index
+        let seg = nearestSegmentIndex(forParagraph: ch.index) ?? 0
+        store.updateReadingPosition(documentId: item.id,
+                                    paragraphIndex: ch.index,
+                                    segmentIndex: seg,
+                                    analyzed: player.useAnalyzedPlayback)
+        if player.isPlaying {
+            pendingStart = seg
+            player.requestStartPlayback(from: seg)
+        }
+        showToast("已跳转到「\(ch.title)」")
     }
 
     /// 章节目录 sheet（在 ScrollViewReader 作用域内构建，tap 才能滚动定位）
     private func tocSheet(proxy: ScrollViewProxy) -> some View {
         NavigationStack {
+            ScrollViewReader { tocProxy in
             List {
                 if chapterList.isEmpty {
                     Text("未检测到章节标记（形如「第X章 …」的独立段落）。")
@@ -365,7 +422,10 @@ struct ReadingView: View {
                             showTOC = false
                             if let seg = nearestSegmentIndex(forParagraph: ch.index) {
                                 pendingStart = seg
-                                player.requestStartPlayback(from: seg)   // 立即从本章起点开始朗读
+                                pendingStartAnalyzed = player.useAnalyzedPlayback
+                                // 直接本地起播，不绕全局 handler——避免 handler 未注入时"点播放没反应"，
+                                // 也走 startPlayback 内统一的掐断旧音/重建流水线逻辑。
+                                startPlayback(from: seg)
                                 showToast("正在从「\(ch.title)」开始朗读")
                             }
                         } label: {
@@ -392,6 +452,14 @@ struct ReadingView: View {
                     }
                 }
             }
+            .onAppear {
+                // 打开目录即定位到当前章节，而不是每次都显示第一章
+                if let cur = currentChapterParagraph {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        withAnimation { tocProxy.scrollTo(cur, anchor: .center) }
+                    }
+                }
+            }
             .navigationTitle("目录（\(chapterList.count) 章）")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -399,6 +467,7 @@ struct ReadingView: View {
                     Button("关闭") { showTOC = false }
                 }
             }
+            }   // ScrollViewReader
         }
     }
 
@@ -581,6 +650,17 @@ struct ReadingView: View {
 
     /// 从当前阅读所在段落开始朗读。优先用最近可见段落（手动滚动/朗读位置都会被记录），
     /// 再映射到当前分段体系（普通分块 or 分声段）的段索引；映射失败则从 0 起播。
+    /// 长按正文「从此处开始播放」：从该段落映射的朗读分段起播
+    private func playFromParagraph(_ para: Int) {
+        highlightIndex = para
+        lastVisibleParagraph = para
+        let seg = nearestSegmentIndex(forParagraph: para) ?? 0
+        pendingStartAnalyzed = player.useAnalyzedPlayback
+        pendingStart = seg
+        startPlayback(from: seg)
+        showToast("从此处开始朗读")
+    }
+
     private func playFromCurrentPage() {
         let para = highlightIndex ?? lastVisibleParagraph ?? 0
         let seg = nearestSegmentIndex(forParagraph: para) ?? 0
@@ -594,6 +674,15 @@ struct ReadingView: View {
     /// 组装声音并从指定段索引开始朗读（全局播放条的「播放/继续」、锁屏控件、目录 ▶︎ 从本章朗读 共用）。
     /// 关键：断点续读必须按「保存时的分声模式」还原分段体系，否则普通分块索引会被套到分声段上（或反之），位置错乱。
     private func startPlayback(from index: Int? = nil) {
+        // 进入 App 立刻点播放时 text 可能还没加载完（.task loadText 尚未执行），
+        // 原来直接走到 guard total>0 静默 return →「点播放半天没反应」。这里先同步补加载。
+        if text.isEmpty {
+            loadText()
+        }
+        guard !text.isEmpty else {
+            showToast("正在载入小说，请稍候再点播放")
+            return
+        }
         player.rate = settings.defaultRate
         player.autoVoiceSwitch = settings.autoVoiceSwitch
 
@@ -614,16 +703,23 @@ struct ReadingView: View {
             player.useAnalyzedPlayback = s.analyzed
         }
         let wantAnalyzed = player.useAnalyzedPlayback
-        let canAnalyze: Bool = {
+        var canAnalyze: Bool = {
             guard wantAnalyzed, let a = analysis, !a.segments.isEmpty else { return false }
             return true
         }()
         // 只在普通模式下才做全量分块，分声模式直接用已缓存的解析结果，避免大文件每次起播都重切一遍
-        let chunks: [String] = canAnalyze ? [] : TextChunker().chunk(text)
-        let total = canAnalyze ? (analysis?.segments.count ?? 0) : chunks.count
+        var chunks: [String] = canAnalyze ? [] : TextChunker().chunk(text)
+        var total = canAnalyze ? (analysis?.segments.count ?? 0) : chunks.count
+        // 分声模式开着但解析缓存还没有 → 自动降级为普通朗读，不能再静默 return（否则点播放无反应）
+        if total == 0 && wantAnalyzed {
+            player.useAnalyzedPlayback = false
+            pendingStartAnalyzed = false
+            canAnalyze = false
+            chunks = TextChunker().chunk(text)
+            total = chunks.count
+        }
         guard total > 0 else {
-            pendingStart = nil
-            pendingStartAnalyzed = nil
+            showToast("无法开始朗读：没有可用内容")
             return
         }
 
@@ -831,6 +927,7 @@ private struct ParagraphRow: View {
     let text: String
     let isHighlighted: Bool
     let index: Int
+    var onPlayFromHere: (() -> Void)? = nil
 
     var body: some View {
         Text(text)
@@ -840,6 +937,16 @@ private struct ParagraphRow: View {
             .cornerRadius(6)
             .textSelection(.enabled)
             .id(index)
+            // 长按正文弹出「从此处开始播放」（系统菜单，不干扰文字选择）
+            .contextMenu {
+                if let onPlayFromHere {
+                    Button {
+                        onPlayFromHere()
+                    } label: {
+                        Label("从此处开始播放", systemImage: "play.circle")
+                    }
+                }
+            }
     }
 }
 

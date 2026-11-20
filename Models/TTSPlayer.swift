@@ -190,6 +190,35 @@ final class TTSPlayer: NSObject, ObservableObject {
         super.init()
         synth.delegate = self
         setupRemoteCommands()
+        // 音频会话被打断（来电/其他 App 抢音频/锁屏）后恢复朗读：
+        // 之前没有任何 interruption 监听，中断结束后会话停在非激活态，朗读再也不出声，
+        // 表现为「读一会儿自动停/看着像 App 退出了」。
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] note in
+            guard let self else { return }
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            Task { @MainActor in
+                switch type {
+                case .began:
+                    // 中断期间暂停，避免 synth 在失活会话上空转
+                    if self.isPlaying { self.synth.pauseSpeaking(at: .word); self.audioPlayer?.pause() }
+                case .ended:
+                    let optRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                    let opts = AVAudioSession.InterruptionOptions(rawValue: optRaw)
+                    // 重新激活会话；若系统允许恢复且我们之前在播放，则继续朗读
+                    try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+                    if self.isPlaying || opts.contains(.shouldResume) {
+                        self.audioPlayer?.play()
+                        self.synth.continueSpeaking()
+                    }
+                @unknown default: break
+                }
+            }
+        }
     }
 
     // MARK: 声音配置
@@ -306,6 +335,13 @@ final class TTSPlayer: NSObject, ObservableObject {
     // MARK: 播放控制
 
     func playSegments(_ segments: [SpeechSegment], startIndex: Int = 0, cloud: Bool = false) {
+        // 切章/重新起播：必须先掐断上一次的朗读，否则旧 synth utterance / 离线 audioPlayer
+        // 会继续读出声，和新内容重叠——用户所见「旧音继续读半天才切/读完才停」。
+        // 先把 isPlaying 置 false，避免 stopSpeaking 触发的 didFinish→advance 误推进。
+        isPlaying = false
+        audioPlayer?.stop()
+        audioPlayer = nil
+        synth.stopSpeaking(at: .immediate)
         resetPipeline()
         self.segments = segments
         self.mode = .segments
@@ -316,6 +352,11 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func playPlain(_ chunks: [String], startIndex: Int = 0, cloud: Bool = false) {
+        // 同 playSegments：先掐断旧朗读，防止串音/旧音继续。
+        isPlaying = false
+        audioPlayer?.stop()
+        audioPlayer = nil
+        synth.stopSpeaking(at: .immediate)
         resetPipeline()
         self.plainChunks = chunks
         self.mode = .plain
@@ -467,11 +508,39 @@ final class TTSPlayer: NSObject, ObservableObject {
         }
         let task = prepTask(for: idx)
         Task { @MainActor in
+            // 合成超时兜底：离线引擎偶发卡住（加载 115MB 模型 / 串行 engineQueue 堵塞）时，
+            // 原实现 await task.value 无超时会永久无声。8 秒未就绪就改用系统声朗读本段，
+            // 保证朗读不中断；预取任务仍在后台继续，就绪后写入缓存供后续使用。
+            let ready = await Self.withTimeout(seconds: 8) { await task.value }
             guard self.isPlaying, self.currentIndex == idx else { return }
-            guard let p = await task.value else { return }
-            self.consumePrepared(p, raw: raw, idx: idx)
+            if let p = ready {
+                self.consumePrepared(p, raw: raw, idx: idx)
+            } else {
+                // 超时或合成返回 nil → 直接系统声读本段（respected 手工音色）
+                self.currentSegmentIndex = idx
+                self.speakingRawText = raw
+                self.nowSpeakingText = raw
+                self.onIndexChange?(idx, self.mode == .segments)
+                self.updateNowPlaying()
+                self.synth.speak(self.buildUtterance(for: idx, text: raw))
+            }
         }
         prefetch(from: idx + 1)
+    }
+
+    /// 给异步任务加超时：超时返回 nil，不取消原任务（后台仍可继续）。
+    private static func withTimeout<T>(seconds: Double,
+                                       operation: @escaping () async -> T?) async -> T? {
+        await withTaskGroup(of: T?.self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     // MARK: 预取流水线实现
