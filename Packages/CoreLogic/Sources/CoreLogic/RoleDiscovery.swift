@@ -446,11 +446,10 @@ public struct JiebaStyleAnalyzer {
         let scoreByName = Dictionary(scored.map { ($0.name, $0.score) }, uniquingKeysWith: { a, _ in a })
 
         // 年长尊称角色（老者绑定用）
-        var elder = roleSet.filter { r in
+        let elder = roleSet.filter { r in
             !["老祖","老者"].contains(r) &&
             ["老","大夫","公","仙","翁","伯"].contains(where: { r.contains($0) })
-        }
-        elder.sort { (scoreByName[$0] ?? 0) > (scoreByName[$1] ?? 1) }
+        }.sorted { (scoreByName[$0] ?? 0) > (scoreByName[$1] ?? 1) }
 
         // ---- 第一趟：给每段对白归属说话人（name），并统计每个角色的真实台词数 ----
         var speakerByDialogue: [Int: String] = [:]     // dialogue index → 归一后的角色主名
