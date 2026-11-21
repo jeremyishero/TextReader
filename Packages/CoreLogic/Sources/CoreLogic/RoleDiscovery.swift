@@ -89,6 +89,7 @@ public struct JiebaStyleAnalyzer {
 
     // 女性/男性名字特征字（与 PC 端 gender_of 一致）
     private static let femaleChars: Set<Character> = Set("婷娟秀丽燕玲芳娜静淑惠美倩雪梅兰竹菊莲茹薇雅婉馨怡悦欣彤丹琳璐瑾萱萌蕊婧韵娇萍霞月盈依曼柔诗梦琪瑶嫣晴芸菲茜露霜娘婆母姐妹姑姨嫂妃")
+    private static let maleChars: Set<Character> = Set("伟强刚勇军杰涛峰毅宇浩凯鹏斌波辉龙飞磊旭昊辰轩睿铭铠铮铁雄豪俊彦国华德建永昌盛邦振耀阳海山岩松柏锋剑彪郎伯叔父兄舅爷公")
 
     // ---- 人名用字表：名（去掉姓之后的部分）必须含这些字，否则多半是普通词 ----
     // 合并 GenderLexicon 男女名字常用字，再补凡人等书中常见名用字。
