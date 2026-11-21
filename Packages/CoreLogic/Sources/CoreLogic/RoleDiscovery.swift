@@ -69,10 +69,10 @@ public struct JiebaStyleAnalyzer {
         return s
     }()
 
-    // 别名身份后缀（厉师兄→厉飞雨）
+    // 别名身份后缀（厉师兄→厉飞雨）——只保留纯身份称谓；
+    // 「大夫/掌柜/管家/少爷/公子」是独立实名角色（墨大夫/田掌柜），绝不能当别名合并掉。
     private static let aliasTitles: [String] = [
-        "师兄","师弟","师姐","师妹","师叔","师伯","师姑","师侄","堂主","护法","长老","门主","宗主",
-        "大夫","掌柜","管家","少爷","公子","先生","大人","老","公","伯","叔","哥","姐","弟","妹","爷"
+        "师兄","师弟","师姐","师妹","师叔","师伯","师姑","师侄"
     ].sorted { $0.count > $1.count }
 
     private static let blackRoots: Set<String> = Set("""
@@ -467,7 +467,7 @@ public struct JiebaStyleAnalyzer {
         // 3) 名用字投票：姓氏字不参与（燕是姓，不算女性字）
         var f = 0, m = 0
         for c in given {
-            if GenderLexicon.surnames.contains(String(c)) { continue }   // 跳过姓氏字
+            // given 已去掉姓氏首字，名里的字都参与投票（「墨凤舞」的「凤」虽也是姓氏，但此处是名用字）
             if GenderLexicon.femaleNameChars.contains(c) || femaleChars.contains(c) { f += 1 }
             if GenderLexicon.maleNameChars.contains(c) || maleChars.contains(c) { m += 1 }
         }
