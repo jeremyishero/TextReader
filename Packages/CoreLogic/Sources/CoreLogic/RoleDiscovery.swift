@@ -303,6 +303,8 @@ public struct JiebaStyleAnalyzer {
         // 独立姓名：姓 + 名（名须含名字常用字，挡掉「时候/后他/马上/冷静」）
         if discoverySurnames.contains(String(chars[0])) {
             let given = String(chars.dropFirst())
+            // 「墨大夫/岳堂主」这类 姓+身份称谓 是合法角色，必须放行
+            if personTitles.contains(given) { return true }
             if looksLikeGiven(given) { return true }
         }
         for cs in compoundSurnames where tok.hasPrefix(cs) {
