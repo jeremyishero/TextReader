@@ -100,4 +100,37 @@ final class JiebaStyleAnalyzerTests: XCTestCase {
         XCTAssertTrue(names.contains("厉飞雨"), "应识别厉飞雨，实为 \(names)")
         XCTAssertFalse(names.contains("厉师兄"), "厉师兄应合并为厉飞雨，实为 \(names)")
     }
+
+    /// 噪声词必须被剔除；韩立/墨大夫=男、墨凤舞=女；燕家老不因「燕」姓误判女。
+    func testNoiseAndGender() {
+        let sample = """
+        韩立说道：「墨大夫，药园可曾备好？」
+        墨大夫道：「已经备好了。」
+        墨凤舞说道：「我也去。」
+        厉飞雨笑道：「那就一同前往。」
+        老者一说道：「时候不早了。」
+        老者听道：「马上上路。」
+        师兄说道：「路上小心。」
+        师叔道：「明显有异。」
+        冷静说道：「时辰后见。」
+        韩立又道：「高男子是谁？」
+        王天古说道：「是须大汉。」
+        """
+        let result = JiebaStyleAnalyzer().analyze(sample)
+        let names = Set(result.roles.map { $0.canonicalName })
+        print("=== 噪声测试角色: \(result.roles.map { ($0.canonicalName, $0.gender.rawValue) }) ===")
+        // 真实角色应保留
+        XCTAssertTrue(names.contains("韩立"), "应保留韩立，实为 \(names)")
+        XCTAssertTrue(names.contains("墨大夫"), "应保留墨大夫")
+        XCTAssertTrue(names.contains("墨凤舞"), "应保留墨凤舞")
+        // 噪声词必须剔除
+        for noise in ["老者一","老者听","师兄","师叔","时候","马上","路上","明显","冷静","时辰后","高男子","须大汉"] {
+            XCTAssertFalse(names.contains(noise), "噪声词不应成角色: \(noise)，实为 \(names)")
+        }
+        // 性别
+        let genderOf: (String) -> Gender? = { n in result.roles.first { $0.canonicalName == n }?.gender }
+        XCTAssertEqual(genderOf("韩立"), .male, "韩立应为男")
+        XCTAssertEqual(genderOf("墨大夫"), .male, "墨大夫应为男")
+        XCTAssertEqual(genderOf("墨凤舞"), .female, "墨凤舞应为女")
+    }
 }

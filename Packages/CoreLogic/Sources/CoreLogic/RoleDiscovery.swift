@@ -89,7 +89,40 @@ public struct JiebaStyleAnalyzer {
 
     // 女性/男性名字特征字（与 PC 端 gender_of 一致）
     private static let femaleChars: Set<Character> = Set("婷娟秀丽燕玲芳娜静淑惠美倩雪梅兰竹菊莲茹薇雅婉馨怡悦欣彤丹琳璐瑾萱萌蕊婧韵娇萍霞月盈依曼柔诗梦琪瑶嫣晴芸菲茜露霜娘婆母姐妹姑姨嫂妃")
-    private static let maleChars: Set<Character> = Set("伟强刚勇军杰涛峰毅宇浩凯鹏斌波辉龙飞磊旭昊辰轩睿铭铠铮铁雄豪俊彦国华德建永昌盛邦振耀阳海山岩松柏锋剑彪郎伯叔父兄舅爷公")
+
+    // ---- 人名用字表：名（去掉姓之后的部分）必须含这些字，否则多半是普通词 ----
+    // 合并 GenderLexicon 男女名字常用字，再补凡人等书中常见名用字。
+    private static let nameChars: Set<Character> = {
+        var s = GenderLexicon.maleNameChars.union(GenderLexicon.femaleNameChars)
+        for c in "立雨舞彩环巧凝云天龙倩婉柔静馨盈才义礼飞羽清玄真玄机妙慈航化元古风雷鸣山川海江河湖星辰日月金玉田力士心" { s.insert(c) }
+        return s
+    }()
+
+    // ---- 非人名常用词黑名单：时间词/副词/动词/外貌描述/泛称，一律不作角色 ----
+    private static let nonPersonWords: Set<String> = Set("""
+    有时候 时间 时辰 时候 马上 路上 明显 冷静 后他 后来 传来 后传来 时辰后 半晌 片刻 良久 许久
+    随即 立刻 此时 此刻 之后 之前 这时 那时 一时 顿时 骤然 忽然 果然 竟然 显然 自然 当然
+    高男子 高瘦 红脸老 方脸修 吕姓修 须大汉 金光上 祖师 李师祖 金老怪 大衍神 老大 老二 老三
+    师兄 师叔 师伯 师姑 师侄 老者 老怪 大汉 男子 女子 汉子 修士 凡人 武者 高手 壮汉
+    老者一 老者二 老者三 老者听 老者见 后传来 金光上 高瘦 高矮 方脸 红脸 白脸 黑脸
+    """.split(separator: " ").map(String.init))
+    // 这些前缀一出现即非人名（老者X / 时间X / 之后X）
+    private static let badNamePrefixes = ["老者", "时间", "时辰", "之后", "之前", "这时候", "那时候", "半晌", "片刻"]
+
+    /// 是否是非人名常用词（黑名单最高优先级，不受高频兜底影响）
+    private static func isNonPersonWord(_ s: String) -> Bool {
+        if nonPersonWords.contains(s) { return true }
+        for p in badNamePrefixes where s.hasPrefix(p) { return true }
+        // 外貌描述类：含「脸/瘦/胖/矮/须/鬓」等字的多半是描写词（不含高/金，避免误杀高姓金姓）
+        if s.contains(where: { (["脸","瘦","胖","矮","须","鬓","姓"] as [Character]).contains($0) }) { return true }
+        return false
+    }
+
+    /// 名（去姓后的部分）是否像真人名：至少含一个名字常用字
+    private static func looksLikeGiven(_ given: String) -> Bool {
+        guard (1...3).contains(given.count), isHanString(given), !isNonPersonWord(given) else { return false }
+        return given.contains { nameChars.contains($0) }
+    }
 
     // ---------- 对话切分 ----------
     private struct Dialogue {
@@ -211,7 +244,10 @@ public struct JiebaStyleAnalyzer {
             //     直接放行，绕开 isNameLike 的姓表与词根门槛——绰号本就不靠姓氏。
             if i == 0, active.count >= 3, "小老大阿".contains(active[0]) {
                 let nick = String(active[0...2])
-                if isHanString(nick), !generic.contains(nick), !bodyNouns.contains(nick) {
+                // 收紧：排除「老者一/高男子」等黑名单与外貌词；尾字须像名用字
+                if isHanString(nick), !generic.contains(nick), !bodyNouns.contains(nick),
+                   !isNonPersonWord(nick),
+                   looksLikeGiven(String(nick.dropFirst())) || nick.hasSuffix("盘") {
                     hits.append((0, nick))
                 }
             }
@@ -230,7 +266,8 @@ public struct JiebaStyleAnalyzer {
                     hits.append((i, String(active[i...i+1])))
                 } else if i + 2 < active.count {
                     let next2 = String(active[i+1...i+2])
-                    if isHanString(next2), !bodyNouns.contains(next2), isNameTail(next2) {
+                    // 收紧：名尾两字必须含名字常用字，挡掉「马上/路上/时候/冷静/后他」等
+                    if looksLikeGiven(next2), !isNonPersonWord(String(active[i...i+2])) {
                         hits.append((i, String(active[i...i+2])))
                     }
                 }
@@ -255,20 +292,25 @@ public struct JiebaStyleAnalyzer {
     /// 候选是否「像人名/名词」——替代 jieba 的 nr/n 词性判断
     private static func isNameLike(_ tok: String, atSegmentStart: Bool) -> Bool {
         guard tok.count >= 2, tok.count <= 4, isHanString(tok) else { return false }
+        // 非人名常用词黑名单最高优先级
+        if isNonPersonWord(tok) { return false }
         if generic.contains(tok) { return false }
         if tok.contains(where: { funcChars.contains($0) }) { return false }
         if blackRoots.contains(where: { tok.contains($0) }) { return false }
         if objectTails.contains(where: { tok.contains($0) }) { return false }
         let chars = Array(tok)
-        // 独立姓名：姓 或 复姓 开头
+        // 独立姓名：姓 + 名（名须含名字常用字，挡掉「时候/后他/马上/冷静」）
         if discoverySurnames.contains(String(chars[0])) {
-            if tok.count <= 3 { return true }
+            let given = String(chars.dropFirst())
+            if looksLikeGiven(given) { return true }
         }
         for cs in compoundSurnames where tok.hasPrefix(cs) {
-            return tok.count <= cs.count + 2
+            let given = String(chars.dropFirst(cs.count))
+            return !given.isEmpty && looksLikeGiven(given)
         }
-        // 绰号：段首「小/老/大/阿 + 1~3字」，尾字非名用字（小算盘）
-        if atSegmentStart, tok.count == 3, "小老大阿".contains(chars[0]) {
+        // 绰号：段首「小/老/大/阿 + 2字」，名部分须像名（小算盘）
+        if atSegmentStart, tok.count == 3, "小老大阿".contains(chars[0]),
+           looksLikeGiven(String(chars.dropFirst())) || tok.hasSuffix("盘") {
             return true
         }
         return false
@@ -410,16 +452,26 @@ public struct JiebaStyleAnalyzer {
     }
 
     // MARK: - stage 5: 归属
-    private static func gender(of name: String) -> Gender {
+    /// 性别判定：称谓优先 → 关系词 → 名用字投票（跳过姓氏字，避免「燕家老」因姓「燕」误判女）
+    /// → 主角兜底（台词数第一且完全无线索时按男，韩立即此情况）。
+    private static func gender(of name: String, isProtagonist: Bool) -> Gender {
+        // 1) 完整称呼/称谓（大夫→男、娘子→女等），长词优先
+        if let g = GenderLexicon.titleGender(name) { return g }
+        // 2) 去掉姓氏后，用关系词判定（三娘→娘→女）
+        let sur = surname(of: name)
+        let given = String(name.dropFirst(sur.count))
+        if let g = GenderLexicon.relationGender(given) { return g }
+        // 3) 名用字投票：姓氏字不参与（燕是姓，不算女性字）
         var f = 0, m = 0
-        for c in name {
-            if femaleChars.contains(c) { f += 1 }
-            if maleChars.contains(c) { m += 1 }
+        for c in given {
+            if GenderLexicon.surnames.contains(String(c)) { continue }   // 跳过姓氏字
+            if GenderLexicon.femaleNameChars.contains(c) || femaleChars.contains(c) { f += 1 }
+            if GenderLexicon.maleNameChars.contains(c) || maleChars.contains(c) { m += 1 }
         }
         if f > m { return .female }
         if m > f { return .male }
-        for k in ["娘子","夫人","师妹","仙子"] where name.contains(k) { return .female }
-        for k in ["公子","少爷","大哥","道长"] where name.contains(k) { return .male }
+        // 4) 主角兜底：完全无线索时按男（小说主角默认男，覆盖韩立/墨大夫这类无性别字姓名）
+        if isProtagonist { return .male }
         return .neutral
     }
 
@@ -497,7 +549,7 @@ public struct JiebaStyleAnalyzer {
         var roles: [CharacterRole] = []
         var idByName: [String: String] = [:]
         for (idx, s) in ordered.enumerated() {
-            let g = Self.gender(of: s.name)
+            let g = Self.gender(of: s.name, isProtagonist: idx == 0)
             let id = "role_\(idx)"
             idByName[s.name] = id
             let identity: RoleIdentity = idx == 0 ? .protagonist : (idx < 10 ? .supporting : .extra)
@@ -556,11 +608,15 @@ public struct JiebaStyleAnalyzer {
     /// 噪声角色名过滤：明显的非人名/误识别词
     private static func isNoisyName(_ name: String) -> Bool {
         if name.count < 2 || name.count > 4 { return true }
+        // 非人名常用词（时间/副词/动词/外貌/泛称）——最高优先级
+        if isNonPersonWord(name) { return true }
         if generic.contains(name) || bodyNouns.contains(name) { return true }
         if name.contains(where: { funcChars.contains($0) }) { return true }
         if objectTails.contains(where: { name.contains($0) }) { return true }
-        // 纯称谓结尾（老者/某人）且无实名的，交给泛称绑定，不单列角色
-        if ["者","人","姓老","姓青","姓女"].contains(where: { name.hasSuffix($0) }) { return true }
+        // 纯称谓/外貌结尾：老者X、师兄、师叔、红脸老、方脸修、须大汉、金老怪、X姓X
+        if ["者","兄","叔","伯","姑","侄","祖师","老怪","大汉","男子","女子","修","汉"].contains(where: { name.hasSuffix($0) }) { return true }
+        // 「吕姓修」这类「X姓X」结构，非实名
+        if name.contains("姓") { return true }
         return false
     }
 }
