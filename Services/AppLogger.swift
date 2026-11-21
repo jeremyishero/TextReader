@@ -63,6 +63,6 @@ final class AppLogger {
 
     /// 记录一次「启动」分隔线
     func markLaunch() {
-        log("========== App 启动 ==========")
+        AppLogger.log("========== App 启动 ==========")
     }
 }
