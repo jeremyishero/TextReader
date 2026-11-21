@@ -48,6 +48,42 @@ final class JiebaStyleAnalyzerTests: XCTestCase {
         XCTAssertTrue(names.contains("厉飞雨"), "应识别厉飞雨，实为 \(names)")
     }
 
+    /// 全文朗读：segments 必须覆盖旁白（引号外正文），不能只读引号内对话。
+    func testNarrationCovered() {
+        let sample = """
+        韩立走在山路上，四下无人，心中暗暗警惕。
+        墨大夫说道：「前面就是药园了。」
+        两人继续前行，山路愈发难走。
+        """
+        let result = JiebaStyleAnalyzer().analyze(sample)
+        let joined = result.segments.map(\.text).joined()
+        XCTAssertTrue(joined.contains("韩立走在山路上"), "旁白应进入 segments，实为 \(result.segments.map(\.text))")
+        XCTAssertTrue(joined.contains("两人继续前行"), "尾部旁白应进入 segments")
+        let narrationCount = result.segments.filter { $0.characterId == nil }.count
+        print("=== 旁白段数: \(narrationCount) / 总段数 \(result.segments.count) ===")
+        XCTAssertGreaterThan(narrationCount, 0, "应存在旁白段")
+    }
+
+    /// 角色按真实台词数降序、无 0 台词角色。
+    func testRolesSortedByQuoteCount() {
+        let result = JiebaStyleAnalyzer().analyze(fanrenSample)
+        var freq: [String: Int] = [:]
+        for seg in result.segments {
+            if let cid = seg.characterId,
+               let name = result.roles.first(where: { $0.id == cid })?.canonicalName {
+                freq[name, default: 0] += 1
+            }
+        }
+        for r in result.roles {
+            let c = freq[r.canonicalName] ?? 0
+            print("角色 \(r.canonicalName) 台词 \(c)")
+            XCTAssertGreaterThan(c, 0, "不应出现 0 台词角色: \(r.canonicalName)")
+        }
+        let counts = result.roles.map { freq[$0.canonicalName] ?? 0 }
+        XCTAssertEqual(counts, counts.sorted(by: >), "角色应按台词数降序: \(counts)")
+        XCTAssertLessThanOrEqual(result.roles.count, 48, "角色数不应超过 48")
+    }
+
     func testAliasMerge() {
         let sample = """
         厉飞雨说道：「今日考校小心。」

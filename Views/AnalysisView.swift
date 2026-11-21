@@ -496,6 +496,17 @@ struct AnalysisView: View {
                         }
                     }
                     .font(.caption)
+                    // 旁白试听：与角色声音一样，选定后立即听一句样音
+                    HStack {
+                        Button {
+                            previewNarration()
+                        } label: {
+                            Label("试听旁白声音", systemImage: "speaker.wave.2")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        Spacer()
+                    }
                 }
                 .padding(.vertical, 4)
                 HStack {
@@ -1045,6 +1056,40 @@ struct AnalysisView: View {
     }
 
     /// 预听该角色当前生效的声音：手动指定离线包 → 离线合成试听；系统声/自动分配 → AVSpeech 试听。
+    /// 试听本书旁白声音：preset 编码 / 离线包编码 / 系统声 / 跟随系统（默认声）四条通道
+    private func previewNarration() {
+        let chosen = voiceDraft[VoicePresetProvider.narrationVoiceKey]
+        let sample = "这里是旁白，正在为你试听当前选择的声音。"
+        func systemPreview(_ identifier: String?) {
+            let v = identifier.flatMap { AVSpeechSynthesisVoice(identifier: $0) }
+                ?? TTSPlayer.keepTingting(AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "zh-CN" }).first
+            VoicePreviewer.shared.preview(v, rate: 1.0, pitch: 1.0)
+        }
+        if let chosen {
+            if let preset = VoicePresetProvider.byEncoded(chosen) {
+                Task { @MainActor in
+                    if let wav = await offlineMgr.synthesizePreview(text: sample, packId: preset.packId,
+                                                                     sid: preset.sid, speed: preset.speed) {
+                        VoicePreviewer.shared.playAudio(wav)
+                    } else { systemPreview(nil) }
+                }
+                return
+            }
+            if let offline = VoiceChoice.decode(chosen) {
+                Task { @MainActor in
+                    if let wav = await offlineMgr.synthesizePreview(text: sample, packId: offline.packId,
+                                                                     sid: offline.sid, speed: 1.0) {
+                        VoicePreviewer.shared.playAudio(wav)
+                    } else { systemPreview(nil) }
+                }
+                return
+            }
+            systemPreview(chosen)   // 系统声 identifier
+            return
+        }
+        systemPreview(nil)          // 跟随系统设置 → 默认声
+    }
+
     private func previewVoice(for role: CharacterRole) {
         let chosen = voiceDraft[role.canonicalName]
         // 手工选了离线包：直接用该包 + 编号合成一句试听，走 VoicePreviewer 的音频播放通道

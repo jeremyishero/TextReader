@@ -9,6 +9,7 @@ struct TextReaderApp: App {
 
     init() {
         CrashReporter.install()
+        AppLogger.shared.markLaunch()
     }
 
     var body: some Scene {
@@ -21,6 +22,10 @@ struct TextReaderApp: App {
             .environmentObject(store)
             .environmentObject(player)
             .environmentObject(settings)
+            // 内存警告是「后台朗读被 jetsam 杀掉」的直接前兆，必须记录
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                AppLogger.log("⚠️ MEMORY WARNING isPlaying=\(player.isPlaying)")
+            }
         }
     }
 
@@ -29,7 +34,9 @@ struct TextReaderApp: App {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
             try AVAudioSession.sharedInstance().setActive(true)
+            AppLogger.log("AudioSession 配置成功")
         } catch {
+            AppLogger.log("AudioSession 配置失败: \(error)")
             print("AudioSession 配置失败: \(error)")
         }
     }

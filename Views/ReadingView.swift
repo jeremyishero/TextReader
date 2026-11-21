@@ -151,8 +151,9 @@ struct ReadingView: View {
                     onVoiceChanged: { assignments in
                         voiceOverrides = assignments
                         store.saveVoiceConfig(assignments, for: item.id)
-                        // 立即生效：旁白声音改动后不必停播重起（离线合成闭包实时读 bookNarration）
-                        applyBookNarration()
+                        // 立即生效：角色/旁白声音改动后，读完当前段即切到新声音（清掉后续预取重建）
+                        applyVoiceConfig(refreshForPlaying: true)
+                        showToast("声音配置已应用")
                     },
                     onImportConfig: { sourceDoc in
                         // 从其他文档导入人物配置：按角色称呼匹配，只影响当前文档
@@ -202,11 +203,14 @@ struct ReadingView: View {
             player.startPlaybackHandler = { idx in self.startPlayback(from: idx) }
         }
         .onChange(of: scenePhase) { phase in
-            // 从后台/锁屏回到前台时，立即把高亮同步到当前朗读位置
+            // 记录生命周期：区分「被系统杀掉（冷启动）」与「中断暂停（热恢复）」
+            AppLogger.log("scenePhase=\(phase) isPlaying=\(player.isPlaying) idx=\(player.currentSegmentIndex)")
             if phase == .active {
+                // 从后台回到前台：只同步高亮，不自动恢复朗读
+                // （之前 AVAudioSession 中断 .ended 里无条件 continueSpeaking 导致「重进又读」，已在 TTSPlayer 修正）
                 syncHighlightNow()
             } else {
-                // 进后台/失活：系统可能直接杀掉 App，onDisappear 不保证触发，这里先落盘
+                // 进后台/失活：落盘进度；不 stop 播放器，让音频会话在后台继续（audio 后台模式）
                 saveProgressNow()
             }
         }
@@ -690,6 +694,65 @@ struct ReadingView: View {
         }
     }
 
+    /// 把当前 voiceOverrides 应用到播放器/离线引擎（角色声音 + 旁白 + 音高）。
+    /// 起播时与「应用」按钮共用；应用时若正在播放，会重建当前段之后的预取，实现「读完当前段即生效」。
+    private func applyVoiceConfig(refreshForPlaying: Bool = false) {
+        guard let a = analysis else { return }
+        // 角色称呼 → 声音选择，拆成离线包 / 系统声两条通道
+        var manualOffline: [String: (packId: String, sid: Int32)] = [:]
+        var manualSystem: Set<String> = []
+        for role in a.roles {
+            guard let choice = voiceOverrides[role.canonicalName] else { continue }
+            if let preset = VoicePresetProvider.byEncoded(choice) {
+                manualOffline[role.id] = (preset.packId, preset.sid)
+            } else if let offline = VoiceChoice.decode(choice) {
+                manualOffline[role.id] = offline
+            } else if let v = AVSpeechSynthesisVoice(identifier: choice), TTSPlayer.isAllowedSystemVoice(v) {
+                manualSystem.insert(role.id)
+            }
+        }
+        player.manualOfflinePacks = manualOffline
+        player.manualSystemVoiceIds = manualSystem
+
+        // 不重复音色分配：按台词频次降序（主角先）占用不同音色
+        var freq: [String: Int] = [:]
+        for seg in a.segments { if let cid = seg.characterId { freq[cid, default: 0] += 1 } }
+        let ordered = a.roles.sorted { l, r in
+            if l.identity != r.identity {
+                if l.identity == .protagonist { return true }
+                if r.identity == .protagonist { return false }
+            }
+            return (freq[l.id] ?? 0) > (freq[r.id] ?? 0)
+        }.map { (id: $0.id, gender: $0.gender) }
+        var overridesById: [String: String] = [:]
+        for role in a.roles {
+            if let choice = voiceOverrides[role.canonicalName] { overridesById[role.id] = choice }
+        }
+        OfflineTTSManager.shared.applyDistinctAssignments(orderedRoles: ordered, overrides: overridesById)
+        applyBookNarration()
+
+        let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)
+        var map: [String: AVSpeechSynthesisVoice] = [:]
+        var pitches: [String: Float] = [:]
+        for role in a.roles {
+            if let identifier = voiceOverrides[role.canonicalName],
+               let v = AVSpeechSynthesisVoice(identifier: identifier),
+               TTSPlayer.isAllowedSystemVoice(v) {
+                map[role.id] = v
+                pitches[role.id] = 1.0
+            } else {
+                map[role.id] = assign.voices[role.id]
+                pitches[role.id] = assign.pitches[role.id] ?? 1.0
+            }
+        }
+        var genders: [String: Gender] = [:]
+        for role in a.roles { genders[role.id] = role.gender }
+        player.setRoleGenders(genders)
+        player.setRoleVoices(map)
+        player.setRolePitches(pitches)
+        if refreshForPlaying { player.refreshVoiceForUpcoming() }
+    }
+
     /// 组装声音并从指定段索引开始朗读（全局播放条的「播放/继续」、锁屏控件、目录 ▶︎ 从本章朗读 共用）。
     /// 关键：断点续读必须按「保存时的分声模式」还原分段体系，否则普通分块索引会被套到分声段上（或反之），位置错乱。
     private func startPlayback(from index: Int? = nil) {
@@ -762,66 +825,7 @@ struct ReadingView: View {
         let cloud = cloudEnabled
 
         if canAnalyze, let a = analysis {
-            // 把「角色称呼 → 声音选择」按 role.id 拆成两条通道：
-            //   ① 离线包编码 → manualOfflinePacks（offlineProvider 直连该包）
-            //   ② 系统声 identifier → roleVoices + manualSystemVoiceIds（跳过离线/云端）
-            // 未指定的角色保持自动分配。
-            var manualOffline: [String: (packId: String, sid: Int32)] = [:]
-            var manualSystem: Set<String> = []
-            for role in a.roles {
-                guard let choice = voiceOverrides[role.canonicalName] else { continue }
-                if let preset = VoicePresetProvider.byEncoded(choice) {
-                    // 48 音色预设：还原为 (packId, sid) 直连该包该说话人
-                    manualOffline[role.id] = (preset.packId, preset.sid)
-                } else if let offline = VoiceChoice.decode(choice) {
-                    manualOffline[role.id] = offline
-                } else if let v = AVSpeechSynthesisVoice(identifier: choice), TTSPlayer.isAllowedSystemVoice(v) {
-                    manualSystem.insert(role.id)
-                }
-            }
-            player.manualOfflinePacks = manualOffline
-            player.manualSystemVoiceIds = manualSystem
-
-            // 不重复的音色分配：按频次降序（主角先）为全部角色依次占用不同音色，
-            // 音色用尽者回退系统默认声。手动指定的角色优先占用其选择。
-            var freq: [String: Int] = [:]
-            for seg in a.segments { if let cid = seg.characterId { freq[cid, default: 0] += 1 } }
-            let ordered = a.roles.sorted { l, r in
-                if l.identity != r.identity {
-                    if l.identity == .protagonist { return true }
-                    if r.identity == .protagonist { return false }
-                }
-                return (freq[l.id] ?? 0) > (freq[r.id] ?? 0)
-            }.map { (id: $0.id, gender: $0.gender) }
-            var overridesById: [String: String] = [:]
-            for role in a.roles {
-                if let choice = voiceOverrides[role.canonicalName] { overridesById[role.id] = choice }
-            }
-            OfflineTTSManager.shared.applyDistinctAssignments(orderedRoles: ordered,
-                                                              overrides: overridesById)
-            // 本书旁白声音（优先于全局设置）；与「应用」按钮共用同一套注入逻辑
-            applyBookNarration()
-
-            // 先按性别池自动分配（含性别音高补偿），再套用本文档的手动声音配置（按角色称呼匹配，仅对本文档生效）
-            let assign = TTSPlayer.assignVoicesAndPitches(roles: a.roles)
-            var map: [String: AVSpeechSynthesisVoice] = [:]
-            var pitches: [String: Float] = [:]
-            for role in a.roles {
-                if let identifier = voiceOverrides[role.canonicalName],
-                   let v = AVSpeechSynthesisVoice(identifier: identifier),
-                   TTSPlayer.isAllowedSystemVoice(v) {
-                    map[role.id] = v
-                    pitches[role.id] = 1.0   // 手动指定声音后不叠加性别音高补偿
-                } else {
-                    map[role.id] = assign.voices[role.id]
-                    pitches[role.id] = assign.pitches[role.id] ?? 1.0
-                }
-            }
-            var genders: [String: Gender] = [:]
-            for role in a.roles { genders[role.id] = role.gender }
-            player.setRoleGenders(genders)
-            player.setRoleVoices(map)
-            player.setRolePitches(pitches)
+            applyVoiceConfig()
             player.playSegments(a.segments, startIndex: start, cloud: cloud)
         } else {
             player.playPlain(chunks, startIndex: start, cloud: cloud)

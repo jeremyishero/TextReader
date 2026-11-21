@@ -77,6 +77,9 @@ struct CustomRule: Codable, Identifiable, Equatable {
 @MainActor
 final class TTSPlayer: NSObject, ObservableObject {
     @Published var isPlaying = false
+    /// 记录中断发生前是否在朗读：只有中断前在朗读、且系统建议恢复时才续读，
+    /// 避免「退后台停、重进 App 又莫名自动朗读」。
+    private var wasPlayingBeforeInterrupt = false
     /// 语速（显示标度）：1.0 = 正常人语速，范围 0.5–3.0。
     /// 内部朗读时乘以 rateScale 换算为 AVSpeechUtterance 标度（其 0.5 = 正常语速）。
     @Published var rate: Float = 1.0
@@ -204,17 +207,25 @@ final class TTSPlayer: NSObject, ObservableObject {
             Task { @MainActor in
                 switch type {
                 case .began:
-                    // 中断期间暂停，避免 synth 在失活会话上空转
-                    if self.isPlaying { self.synth.pauseSpeaking(at: .word); self.audioPlayer?.pause() }
+                    AppLogger.log("audio interruption BEGAN isPlaying=\(self.isPlaying)")
+                    self.wasPlayingBeforeInterrupt = self.isPlaying
+                    // 中断期间暂停发声但不改 isPlaying（保持“逻辑上在播放”的状态，锁屏控件仍显示播放）
+                    self.synth.pauseSpeaking(at: .word)
+                    self.audioPlayer?.pause()
                 case .ended:
+                    AppLogger.log("audio interruption ENDED wasPlaying=\(self.wasPlayingBeforeInterrupt)")
                     let optRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                     let opts = AVAudioSession.InterruptionOptions(rawValue: optRaw)
-                    // 重新激活会话；若系统允许恢复且我们之前在播放，则继续朗读
                     try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                    if self.isPlaying || opts.contains(.shouldResume) {
+                    // 只有「中断前确实在朗读」才恢复：避免进后台被系统暂停后、重进 App 又自动读起来
+                    if self.wasPlayingBeforeInterrupt && opts.contains(.shouldResume) {
                         self.audioPlayer?.play()
                         self.synth.continueSpeaking()
+                    } else if self.wasPlayingBeforeInterrupt {
+                        // 系统未建议恢复：用 resume() 走完整恢复路径（含预取重启）
+                        self.resume()
                     }
+                    self.wasPlayingBeforeInterrupt = false
                 @unknown default: break
                 }
             }
@@ -335,6 +346,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     // MARK: 播放控制
 
     func playSegments(_ segments: [SpeechSegment], startIndex: Int = 0, cloud: Bool = false) {
+        AppLogger.log("playSegments count=\(segments.count) start=\(startIndex) cloud=\(cloud)")
         // 切章/重新起播：必须先掐断上一次的朗读，否则旧 synth utterance / 离线 audioPlayer
         // 会继续读出声，和新内容重叠——用户所见「旧音继续读半天才切/读完才停」。
         // 先把 isPlaying 置 false，避免 stopSpeaking 触发的 didFinish→advance 误推进。
@@ -352,6 +364,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func playPlain(_ chunks: [String], startIndex: Int = 0, cloud: Bool = false) {
+        AppLogger.log("playPlain count=\(chunks.count) start=\(startIndex) cloud=\(cloud)")
         // 同 playSegments：先掐断旧朗读，防止串音/旧音继续。
         isPlaying = false
         audioPlayer?.stop()
@@ -367,6 +380,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func pause() {
+        AppLogger.log("pause called")
         audioPlayer?.pause()
         synth.pauseSpeaking(at: .word)
         isPlaying = false
@@ -374,6 +388,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func resume() {
+        AppLogger.log("resume called")
         audioPlayer?.play()
         synth.continueSpeaking()
         isPlaying = true
@@ -407,6 +422,7 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
 
     func stop() {
+        AppLogger.log("stop called (isPlaying=\(isPlaying) idx=\(currentIndex))")
         resetPipeline()
         audioPlayer?.stop()
         synth.stopSpeaking(at: .immediate)
@@ -512,6 +528,7 @@ final class TTSPlayer: NSObject, ObservableObject {
             // 原实现 await task.value 无超时会永久无声。8 秒未就绪就改用系统声朗读本段，
             // 保证朗读不中断；预取任务仍在后台继续，就绪后写入缓存供后续使用。
             let ready = await Self.withTimeout(seconds: 8) { await task.value }
+            if ready == nil { AppLogger.log("speakCurrent TIMEOUT idx=\(idx) → 系统声兜底") }
             guard self.isPlaying, self.currentIndex == idx else { return }
             if let p = ready {
                 self.consumePrepared(p, raw: raw, idx: idx)
@@ -568,6 +585,16 @@ final class TTSPlayer: NSObject, ObservableObject {
         for (_, t) in prepTasks { t.cancel() }
         prepTasks.removeAll()
         prepared.removeAll()
+    }
+
+    /// 声音配置变更后调用：丢掉「当前段之后」已缓存的预取音频，让后续段用新声音重建。
+    /// 当前正在朗读的段不受影响（读完当前段后切换，符合用户预期）。
+    func refreshVoiceForUpcoming() {
+        let keep = currentIndex
+        for (idx, t) in prepTasks where idx > keep { t.cancel() }
+        prepTasks = prepTasks.filter { $0.key <= keep }
+        prepared = prepared.filter { $0.key <= keep }
+        if isPlaying { prefetch(from: currentIndex + 1) }
     }
 
     /// 取（或创建）某个索引的预取任务；任务完成会把单元写入 prepared 缓存。
@@ -703,6 +730,7 @@ final class TTSPlayer: NSObject, ObservableObject {
         // 前置校验：AVAudioPlayer(data:) 对畸形 WAV 可能抛「不可捕获的 NSException」直接令进程 abort，
         // 因此只把结构合法的 WAV 交给它；非法数据一律回退本地合成，避免「几秒后闪退」。
         guard Self.wavHeaderOK(data) else {
+            AppLogger.log("playAudioData BAD WAV fallback to synth")
             if let notice { onCloudFallback?() }
             speakLocal(fallbackText)
             return
@@ -751,6 +779,7 @@ final class TTSPlayer: NSObject, ObservableObject {
 
 
     private func advance() {
+        AppLogger.log("advance idx=\(currentIndex)→\(currentIndex + 1) isPlaying=\(isPlaying)")
         // 停止后仍可能收到上一次朗读的完成回调，此时不得推进下一段（否则表现为「停了又继续读」）
         guard isPlaying else { return }
         currentIndex += 1

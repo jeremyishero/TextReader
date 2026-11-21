@@ -99,6 +99,10 @@ public struct JiebaStyleAnalyzer {
         /// 正双引号紧前面是否有冒号（：/:）——只有「韩立说道：“…”」这种才是角色对话；
         /// 无冒号的引号内容（如强调、书名号式引用）按旁白读，不切换角色声音。
         var hasColon: Bool = false
+        /// 该引号在全文中的字符区间 [quoteStart, quoteEnd)，用于把引号外的旁白也切成段。
+        /// quoteStart 指正引号位置，quoteEnd 指反引号后一位。
+        var quoteStart: Int = 0
+        var quoteEnd: Int = 0
     }
 
     private static func isHan(_ c: Character) -> Bool {
@@ -173,7 +177,8 @@ public struct JiebaStyleAnalyzer {
             // 正引号前面紧邻的字符必须是冒号（：或 :），才是「某人说道：“…”」的角色对话。
             // 无冒号的引号内容（引用/强调/书名）按旁白处理，不切换角色声音。
             let hasColon = i > 0 && (chars[i - 1] == "：" || chars[i - 1] == ":")
-            res.append(Dialogue(pre: pre, post: post, text: qtext, hasColon: hasColon))
+            res.append(Dialogue(pre: pre, post: post, text: qtext, hasColon: hasColon,
+                                quoteStart: i, quoteEnd: qend))
             i = qend
         }
         return res
@@ -427,7 +432,6 @@ public struct JiebaStyleAnalyzer {
         let dialogues = Self.extractDialogues(full)
         let wf = Self.buildWordFreq(dialogues)
         var discovered = Self.discover(dialogues, wordFreq: wf).filter { !userStopwords.contains($0.name) }
-        // 用户白名单词强制作为角色（出现即注册，绕过形态/频次门槛）
         for w in userWhitelist where !discovered.contains(where: { $0.name == w }) {
             let bind = dialogues.reduce(0) { acc, d in
                 acc + (d.pre.contains(w) || d.post.contains(w) ? 1 : 0)
@@ -438,54 +442,27 @@ public struct JiebaStyleAnalyzer {
         let scored = merged.scored
         let aliasMap = merged.aliasMap
 
-        let roleNames = scored.map(\.name)
-        let roleSet = Set(roleNames)
+        let roleSet = Set(scored.map(\.name))
         let scoreByName = Dictionary(scored.map { ($0.name, $0.score) }, uniquingKeysWith: { a, _ in a })
-        let bindByName = Dictionary(scored.map { ($0.name, $0.bind) }, uniquingKeysWith: { a, _ in a })
 
-        // 年长尊称角色（老者绑定用），按分数降序，排除纯泛称
-        var elder = roleNames.filter { r in
+        // 年长尊称角色（老者绑定用）
+        var elder = roleSet.filter { r in
             !["老祖","老者"].contains(r) &&
             ["老","大夫","公","仙","翁","伯"].contains(where: { r.contains($0) })
         }
         elder.sort { (scoreByName[$0] ?? 0) > (scoreByName[$1] ?? 1) }
 
-        // 构建角色对象（按台词/对话次数 bind 降序，主角/高频在前）
-        // 只保留前 48 个角色：其余低频角色丢弃——它们的台词在下面归属时因 idByName 无条目，
-        // 自动落成旁白(nil)，不会因角色过多导致声音分配紧张、列表过长。
-        let ordered = Array(scored.sorted { $0.bind > $1.bind }.prefix(48))
-        var roles: [CharacterRole] = []
-        var idByName: [String: String] = [:]
-        for (idx, s) in ordered.enumerated() {
-            let g = Self.gender(of: s.name)
-            let id = "role_\(idx)"
-            idByName[s.name] = id
-            let identity: RoleIdentity = idx == 0 ? .protagonist : (s.bind >= 5 ? .supporting : .extra)
-            let hint = g == .male || g == .eunuch ? "male" : (g == .female ? "female" : "neutral")
-            roles.append(CharacterRole(id: id, canonicalName: s.name, aliases: [s.name],
-                                       gender: g, voiceHint: hint, identity: identity))
-        }
-
-        // 逐句归属
-        var segments: [SpeechSegment] = []
+        // ---- 第一趟：给每段对白归属说话人（name），并统计每个角色的真实台词数 ----
+        var speakerByDialogue: [Int: String] = [:]     // dialogue index → 归一后的角色主名
         var lastNamed: String? = nil
-        var pos = 0
-        for d in dialogues {
-            // 无冒号引号：按旁白读，不识别为任何角色台词、不切换声音
-            guard d.hasColon else {
-                segments.append(SpeechSegment(id: "seg_\(pos)", text: d.text,
-                                              characterId: nil, emotion: .neutral, position: pos))
-                pos += 1
-                continue
-            }
+        for (di, d) in dialogues.enumerated() {
+            guard d.hasColon else { continue }          // 无冒号引号不算角色台词
             var sp: String? = nil
             if let h = Self.nameCandidates(in: d.post).first { sp = h.1 }
             if sp == nil, let h = Self.nameCandidates(in: d.pre).first { sp = h.1 }
             if let mapped = sp.flatMap({ aliasMap[$0] }) { sp = mapped }
-
             var genericHit: String? = nil
             for g in Self.refWords where d.post.contains(g) || d.pre.contains(g) { genericHit = g; break }
-
             var speaker: String? = nil
             if let s = sp, roleSet.contains(s) {
                 speaker = s; lastNamed = s
@@ -499,11 +476,92 @@ public struct JiebaStyleAnalyzer {
             if let mapped = speaker.flatMap({ aliasMap[$0] }) {
                 speaker = mapped; lastNamed = mapped
             }
-            let cid = speaker.flatMap { idByName[$0] }
-            segments.append(SpeechSegment(id: "seg_\(pos)", text: d.text,
-                                          characterId: cid, emotion: .neutral, position: pos))
-            pos += 1
+            if let s = speaker, roleSet.contains(s) { speakerByDialogue[di] = s }
         }
+        // 真实台词数（只统计归属到角色的对白）
+        var quoteCount: [String: Int] = [:]
+        for (_, name) in speakerByDialogue { quoteCount[name, default: 0] += 1 }
+
+        // ---- 构建角色：按真实台词数降序，剔除 0 台词与噪声，最多 48 个 ----
+        // 噪声过滤：名字必须来自 discover 的准入候选，且满足「至少 1 次真实台词」；
+        // 像「马上/冷冷/大衍神」这类在正文里被误当说话人的词，通常 bind 低且台词数少，
+        // 这里再用 isNoisyName 兜一层。
+        let eligible = scored.filter { s in
+            (quoteCount[s.name] ?? 0) > 0 && !Self.isNoisyName(s.name)
+        }
+        let ordered = Array(eligible.sorted {
+            let a = quoteCount[$0.name] ?? 0, b = quoteCount[$1.name] ?? 0
+            if a != b { return a > b }
+            return $0.score > $1.score
+        }.prefix(48))
+
+        var roles: [CharacterRole] = []
+        var idByName: [String: String] = [:]
+        for (idx, s) in ordered.enumerated() {
+            let g = Self.gender(of: s.name)
+            let id = "role_\(idx)"
+            idByName[s.name] = id
+            let identity: RoleIdentity = idx == 0 ? .protagonist : (idx < 10 ? .supporting : .extra)
+            let hint = g == .male || g == .eunuch ? "male" : (g == .female ? "female" : "neutral")
+            roles.append(CharacterRole(id: id, canonicalName: s.name, aliases: [s.name],
+                                       gender: g, voiceHint: hint, identity: identity))
+        }
+
+        // ---- 第二趟：按全文顺序输出 segments（旁白 + 对白），保证朗读覆盖全文 ----
+        var segments: [SpeechSegment] = []
+        let chars = Array(full)
+        var cursor = 0
+        func appendNarration(_ range: Range<Int>) {
+            let raw = String(chars[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+            for piece in Self.splitNarration(raw) {
+                segments.append(SpeechSegment(id: "seg_\(segments.count)", text: piece,
+                                              characterId: nil, emotion: .neutral,
+                                              position: segments.count))
+            }
+        }
+        for (di, d) in dialogues.enumerated() {
+            // 引号之前的正文 → 旁白段
+            if d.quoteStart > cursor { appendNarration(cursor..<d.quoteStart) }
+            // 引号内容 → 角色台词（有冒号且归属到角色）或旁白（无冒号/未归属）
+            let cid = speakerByDialogue[di].flatMap { idByName[$0] }
+            segments.append(SpeechSegment(id: "seg_\(segments.count)", text: d.text,
+                                          characterId: cid, emotion: .neutral,
+                                          position: segments.count))
+            cursor = d.quoteEnd
+        }
+        if cursor < chars.count { appendNarration(cursor..<chars.count) }
         return AnalysisResult(roles: roles, segments: segments)
+    }
+
+    /// 把一大段旁白按标点切成适合 TTS 的小段（≤160字），避免单次合成过长。
+    private static func splitNarration(_ s: String) -> [String] {
+        guard !s.isEmpty else { return [] }
+        var result: [String] = []
+        for para in s.split(separator: "\n") {
+            let p = para.trimmingCharacters(in: .whitespaces)
+            guard !p.isEmpty else { continue }
+            var cur = ""
+            for ch in p {
+                cur.append(ch)
+                if "。！？!?；;".contains(ch), cur.count >= 40 {
+                    result.append(cur); cur = ""
+                } else if cur.count >= 160 {
+                    result.append(cur); cur = ""
+                }
+            }
+            if !cur.isEmpty { result.append(cur) }
+        }
+        return result
+    }
+
+    /// 噪声角色名过滤：明显的非人名/误识别词
+    private static func isNoisyName(_ name: String) -> Bool {
+        if name.count < 2 || name.count > 4 { return true }
+        if generic.contains(name) || bodyNouns.contains(name) { return true }
+        if name.contains(where: { funcChars.contains($0) }) { return true }
+        if objectTails.contains(where: { name.contains($0) }) { return true }
+        // 纯称谓结尾（老者/某人）且无实名的，交给泛称绑定，不单列角色
+        if ["者","人","姓老","姓青","姓女"].contains(where: { name.hasSuffix($0) }) { return true }
+        return false
     }
 }

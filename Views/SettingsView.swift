@@ -7,6 +7,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var offlineMgr = OfflineTTSManager.shared
     @State private var showPackImporter = false
+    @State private var showLogExport = false
     @State private var packImportMsg: String? = nil
     /// 已安装包列表缓存：installedPacks() 是磁盘扫描，Form 多行渲染会反复求值，故只在
     /// 视图出现 / 安装状态版本变化时刷新一次。
@@ -89,6 +90,27 @@ struct SettingsView: View {
                         Text("暂无崩溃记录。")
                             .font(.caption).foregroundColor(.secondary)
                     }
+                }
+
+                Section("朗读日志（供排查后台自动退出）") {
+                    Text("记录播放/中断/合成/进入后台等事件。若遇「读着读着自动退出」，请点导出把日志发给开发者。")
+                        .font(.caption2).foregroundColor(.secondary)
+                    ScrollView {
+                        Text(AppLogger.shared.logText)
+                            .font(.caption2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 180)
+                    HStack {
+                        Button("导出朗读日志") { showLogExport = true }
+                            .buttonStyle(.bordered)
+                        Button("清除日志") { AppLogger.shared.clear() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .sheet(isPresented: $showLogExport) {
+                    LogExportView(url: AppLogger.shared.logURL)
                 }
 
                 Section("默认语速") {
@@ -452,4 +474,13 @@ struct SettingsView: View {
             }
         }
     }
+}
+
+/// 导出朗读日志文件（系统分享面板）
+private struct LogExportView: UIViewControllerRepresentable {
+    let url: URL
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
