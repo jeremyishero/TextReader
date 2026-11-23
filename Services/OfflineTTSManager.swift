@@ -61,15 +61,43 @@ final class OfflineTTSManager: ObservableObject {
         DispatchQueue.main.async { self.lastOfflineError = msg }
     }
 
-    /// 熔断名单：某包一旦合成失败（静音/0 样本），后续直接返回 nil 不再进引擎。
+    /// 熔断名单：某包连续合成失败达到 3 次（静音/0 样本/引擎创建失败），后续直接返回 nil 不再进引擎。
     /// 目的：避免每个预取任务都去等一次「加载 115MB 模型 + 推理 + 仍无结果」，
     /// 把 4 路预取流水线拖死（用户表现为「听着听着就停了」）。
     private var failedPacks: Set<String> = []
+    /// 连续失败计数（engineQueue 后台线程读写）：达到 failureThreshold 才熔断。
+    private var failureCounts: [String: Int] = [:]
+    private let failureThreshold = 3
+    /// 供设置页显示「无效」标记（主线程发布；与 failedPacks 内容同步）
+    @Published var invalidPackIds: Set<String> = []
+
+    /// 记录一次合成失败；连续失败达到阈值 → 熔断并发布无效标记。成功时调用 resetFailure 清零。
+    private func noteFailure(_ packId: String) {
+        failureCounts[packId, default: 0] += 1
+        if failureCounts[packId]! >= failureThreshold && !failedPacks.contains(packId) {
+            failedPacks.insert(packId)
+            let id = packId
+            DispatchQueue.main.async { self.invalidPackIds.insert(id) }
+            reportOfflineError("\(packId)：连续合成失败 \(failureThreshold) 次，已标记为无效")
+        }
+    }
+
+    /// 合成成功：清零连续失败计数并解除该包熔断。
+    private func noteSuccess(_ packId: String) {
+        failureCounts[packId] = 0
+        if failedPacks.remove(packId) != nil {
+            let id = packId
+            DispatchQueue.main.async { self.invalidPackIds.remove(id) }
+        }
+    }
 
     /// 清空熔断名单（设置页「清除故障并重试」或性别标注变更后调用）
     func resetOfflineFailures() {
         engineQueue.async { [weak self] in
-            self?.failedPacks.removeAll()
+            guard let self else { return }
+            self.failedPacks.removeAll()
+            self.failureCounts.removeAll()
+            DispatchQueue.main.async { self.invalidPackIds.removeAll() }
         }
     }
 
@@ -233,6 +261,8 @@ final class OfflineTTSManager: ObservableObject {
                 }
             }
             failedPacks.remove(id)
+            failureCounts.removeValue(forKey: id)
+            DispatchQueue.main.async { self.invalidPackIds.remove(id) }
         }
         try? fm.removeItem(at: packDir(id))
         // 磁盘已删除，通知 SwiftUI 立即重绘（否则要退出设置页再进入才更新）
@@ -492,26 +522,28 @@ final class OfflineTTSManager: ObservableObject {
     /// 1) 先用带 rule_fsts 的引擎合成；
     /// 2) 若产出静音/0 样本，换一个不带 rule_fsts 的引擎再试一次
     ///    （中文归一化 FST 与模型不兼容时会把文本归一成空串，表现为 n>0 但样本全零）；
-    /// 3) 两者都失败 → 该包加入熔断名单，后续直接返回 nil，避免拖死 4 路预取流水线。
+    /// 3) 两者都失败 → 记一次失败；连续 3 次都失败才熔断并标记「无效」，避免偶发失败误杀。
     private func synthWithFallback(text: String, packId: String, dir: String, sid: Int32, speed: Float) -> Data? {
         if failedPacks.contains(packId) {
-            reportOfflineError("\(packId)：此前合成失败已熔断，本次直接回退系统声（可点「清除故障并重试」）")
             return nil
         }
-        guard let tts = loadEngine(packId: packId, dir: dir) else { return nil }
+        guard let tts = loadEngine(packId: packId, dir: dir) else {
+            noteFailure(packId)   // 引擎加载失败也计入连续失败
+            return nil
+        }
         let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
         if let d = engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed) {
-            failedPacks.remove(packId)
+            noteSuccess(packId)
             return d
         }
         if let alt = loadEngine(packId: packId, dir: dir, useRuleFsts: false) {
             let altSid: Int32 = SherpaOnnxOfflineTtsNumSpeakers(alt) > 1 ? sid : 0
             if let d = engineSynthesize(text: text, packId: packId, dir: dir, tts: alt, sid: altSid, speed: speed) {
-                failedPacks.remove(packId)
+                noteSuccess(packId)
                 return d
             }
         }
-        failedPacks.insert(packId)
+        noteFailure(packId)   // 本次调用两次引擎尝试均失败 → 连续失败 +1
         return nil
     }
 
@@ -599,8 +631,11 @@ final class OfflineTTSManager: ObservableObject {
     /// 清除角色分配缓存（性别标注/编号列表变化后调用，下次朗读重新分配）
     func resetAssignments() {
         engineQueue.async { [weak self] in
-            self?.roleAssignments.removeAll()
-            self?.failedPacks.removeAll()   // 配置变了，允许重新尝试离线合成
+            guard let self else { return }
+            self.roleAssignments.removeAll()
+            self.failedPacks.removeAll()   // 配置变了，允许重新尝试离线合成
+            self.failureCounts.removeAll()
+            DispatchQueue.main.async { self.invalidPackIds.removeAll() }
         }
     }
 

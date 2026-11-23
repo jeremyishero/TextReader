@@ -83,11 +83,11 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 语速（显示标度）：1.0 = 正常人语速，范围 0.5–3.0。
     /// 内部朗读时乘以 rateScale 换算为 AVSpeechUtterance 标度（其 0.5 = 正常语速）。
     @Published var rate: Float = 1.0
-    /// 段落间停顿（秒）：段末带 TextChunker.paragraphBreakMarker 时使用；默认 0.45 与旧行为一致。
+    /// 段落间停顿（秒）：段末带 TextChunker.paragraphBreakMarker 时使用；默认 0（不停顿）。
     /// 由 ReadingView 按设置页「段落间停顿」注入，改动后下次起播生效。
-    var paragraphPause: TimeInterval = 0.45
-    /// 章节间停顿（秒）：当前段以「第X章/回/卷」开头时，取 max(段落停顿, 章节停顿)。
-    var chapterPause: TimeInterval = 1.2
+    var paragraphPause: TimeInterval = 0
+    /// 章节间停顿（秒）：当前段以「第X章/回/卷」开头时，取 max(段落停顿, 章节停顿)；默认 0。
+    var chapterPause: TimeInterval = 0
     @Published var currentSegmentIndex: Int = -1
     /// 当前正在朗读的文本（供阅读页同步高亮段落）
     @Published var nowSpeakingText: String?
@@ -789,8 +789,8 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 离线/云端音频路径的段间停顿：按刚读完的段落文本判定（章节开头 → 章节停顿；其余 → 短间隔）。
     private func pauseAfterCurrentSegment() -> TimeInterval {
         guard let raw = currentText() else { return 0.06 }
-        let head = String(raw.prefix(16))
-        if head.range(of: #"第[一二三四五六七八九十百千0-9]+[章回卷]"#, options: .regularExpression) != nil {
+        // 与系统声路径一致：只认段首「第X章/回/卷」，避免段中提及章回名时误判成长停顿
+        if raw.range(of: #"^\s*第[一二三四五六七八九十百千0-9]+[章回卷]"#, options: .regularExpression) != nil {
             return max(paragraphPause, chapterPause)
         }
         return 0.06

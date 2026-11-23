@@ -491,12 +491,12 @@ struct AnalysisView: View {
                     Text("本书旁白声音（优先于系统设置）")
                         .font(.caption2).foregroundColor(.secondary)
                     Picker("旁白声音", selection: narrationBinding) {
-                        Text("跟随系统设置").tag(String?.none)
+                        Text("跟随系统设置").tag(Self.autoVoiceTag)
                         ForEach(voiceOptions, id: \.identifier) { v in
-                            Text(v.name).tag(String?.some(v.identifier))
+                            Text(v.name).tag(v.identifier)
                         }
                         ForEach(offlineVoiceOptions) { opt in
-                            Text(opt.name).tag(String?.some(opt.id))
+                            Text(opt.name).tag(opt.id)
                         }
                     }
                     .font(.caption)
@@ -663,12 +663,12 @@ struct AnalysisView: View {
                !voiceOptions.isEmpty || !offlineVoiceOptions.isEmpty {
                 HStack(spacing: 8) {
                     Picker("声音", selection: voiceBinding(for: role)) {
-                        Text("自动分配").tag(String?.none)
+                        Text("自动分配").tag(Self.autoVoiceTag)
                         ForEach(voiceOptions, id: \.identifier) { v in
-                            Text(v.name).tag(String?.some(v.identifier))
+                            Text(v.name).tag(v.identifier)
                         }
                         ForEach(offlineVoiceOptions) { opt in
-                            Text(opt.name).tag(String?.some(opt.id))
+                            Text(opt.name).tag(opt.id)
                         }
                     }
                     .font(.caption)
@@ -1050,20 +1050,34 @@ struct AnalysisView: View {
 
     // MARK: 角色声音
 
-    private func voiceBinding(for role: CharacterRole) -> Binding<String?> {
+    /// 声音 Picker 的绑定。用非 Optional 哨兵 "__auto__" 表示「自动分配」：
+    /// SwiftUI 对 Optional tag（String?.none / .some）的匹配不稳定，滚动选择后会跳回旧选中项；
+    /// 改成普通 String tag 后选择稳定，且不改变 voiceDraft 的实际存储语义（nil 仍表示自动）。
+    private static let autoVoiceTag = "__auto__"
+    private func voiceBinding(for role: CharacterRole) -> Binding<String> {
         Binding(
-            get: { voiceDraft[role.canonicalName] },
+            get: { voiceDraft[role.canonicalName] ?? Self.autoVoiceTag },
             set: { newValue in
-                voiceDraft[role.canonicalName] = newValue
+                if newValue == Self.autoVoiceTag {
+                    voiceDraft.removeValue(forKey: role.canonicalName)
+                } else {
+                    voiceDraft[role.canonicalName] = newValue
+                }
             }
         )
     }
 
     /// 本书旁白声音（草稿）：优先于系统设置里的全局旁白声。
-    private var narrationBinding: Binding<String?> {
+    private var narrationBinding: Binding<String> {
         Binding(
-            get: { voiceDraft[VoicePresetProvider.narrationVoiceKey] },
-            set: { voiceDraft[VoicePresetProvider.narrationVoiceKey] = $0 }
+            get: { voiceDraft[VoicePresetProvider.narrationVoiceKey] ?? Self.autoVoiceTag },
+            set: { newValue in
+                if newValue == Self.autoVoiceTag {
+                    voiceDraft.removeValue(forKey: VoicePresetProvider.narrationVoiceKey)
+                } else {
+                    voiceDraft[VoicePresetProvider.narrationVoiceKey] = newValue
+                }
+            }
         )
     }
 

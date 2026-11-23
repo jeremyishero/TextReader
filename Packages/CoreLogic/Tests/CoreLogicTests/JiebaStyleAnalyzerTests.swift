@@ -166,4 +166,28 @@ final class JiebaStyleAnalyzerTests: XCTestCase {
         if let a = ageOf("老者") { XCTAssertEqual(a, .senior, "老者→老年") }
         if let a = ageOf("童子") { XCTAssertEqual(a, .child, "童子→童年") }
     }
+
+    /// 引号引用（法器/功法名）不应识别为角色台词，按旁白读；真实台词仍要识别。
+    func testQuotedReferenceNotDialogue() {
+        let sample = """
+        韩立取出法宝："焚天鼎"，心中一喜。
+        此剑名曰："青冥"，锋利无比。
+        韩立说道："这法宝不错。"
+        墨大夫问道："何处得来的？"
+        韩立答道："偶然所得。"
+        墨大夫道："好，好。"
+        """
+        let result = JiebaStyleAnalyzer().analyze(sample)
+        let names = Set(result.roles.map { $0.canonicalName })
+        print("=== 引用测试角色: \(names) ===")
+        // 引用内容不应成为角色
+        XCTAssertFalse(names.contains("焚天鼎"), "法器名不应成角色")
+        XCTAssertFalse(names.contains("青冥"), "剑名不应成角色")
+        // 真实说话角色应保留
+        XCTAssertTrue(names.contains("韩立"), "韩立应识别")
+        XCTAssertTrue(names.contains("墨大夫"), "墨大夫应识别")
+        // 引用文字应作为旁白段出现在 segments 里（被朗读）
+        let joined = result.segments.map(\.text).joined()
+        XCTAssertTrue(joined.contains("焚天鼎"), "法器名应作为旁白被朗读")
+    }
 }

@@ -501,6 +501,30 @@ public struct JiebaStyleAnalyzer {
         return .youth
     }
 
+    /// 判断带冒号的引号是否为「引用/命名」而非角色说话。
+    /// 依据：① 引号前分句含命名/引用动词或器物量词；② 引号内是短名词且无句末标点/语气词。
+    /// 命中则按旁白处理，不归属角色、不计台词。
+    private static func isQuotedReference(_ d: Dialogue) -> Bool {
+        // ① 冒号前的提示词：名曰/名为/唤作/称为/名叫/号/取得/炼成/炼制/法宝/此剑/此刀/这件/一件 等
+        let namingWords = ["名曰", "名为", "名叫", "唤作", "称为", "号称", "取名", "取得", "得到",
+                           "炼成", "炼制", "炼出", "铸成", "打造", "法宝", "法器", "灵器", "此剑",
+                           "此刀", "此鼎", "这件", "一件", "一枚", "一座", "唤名", "字号"]
+        let pre = d.pre
+        for w in namingWords where pre.hasSuffix(w) || pre.contains(w) { return true }
+
+        // ② 引号内短且无句末标点、无说话语气 → 视为名词引用（焚天鼎/青冥/伏龙鼎）。
+        //    但「X道："好"」这种前面有明确说话动词的是真台词，不能误杀。
+        let t = d.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasSentenceEnd = t.contains(where: { "。！？!?；;，,.…".contains($0) })
+        let hasSpeechTone = t.contains(where: { "啊呀哦嗯吧呢吗嘛哈嘿呀".contains($0) })
+        if t.count <= 6 && !hasSentenceEnd && !hasSpeechTone {
+            let speechCues = ["道", "说", "问", "答", "喊", "叫", "笑道", "喝道", "问道", "答道", "说道", "吟道"]
+            let precededBySpeech = speechCues.contains(where: { pre.hasSuffix($0) })
+            if !precededBySpeech { return true }
+        }
+        return false
+    }
+
     // MARK: - 对外入口
     public func analyze(_ text: String, userStopwords: Set<String> = [],
                         userWhitelist: Set<String> = []) -> AnalysisResult {
@@ -534,6 +558,9 @@ public struct JiebaStyleAnalyzer {
         var lastNamed: String? = nil
         for (di, d) in dialogues.enumerated() {
             guard d.hasColon else { continue }          // 无冒号引号不算角色台词
+            // 引用而非说话：法宝名/功法名等用引号标出（如「取出法宝："焚天鼎"」），
+            // 即使前面有冒号也不是台词，必须按旁白读，且不能给任何角色计台词。
+            guard !Self.isQuotedReference(d) else { continue }
             var sp: String? = nil
             if let h = Self.nameCandidates(in: d.post).first { sp = h.1 }
             if sp == nil, let h = Self.nameCandidates(in: d.pre).first { sp = h.1 }

@@ -11,10 +11,10 @@ final class AppSettings: ObservableObject {
     /// 默认语速（显示标度）：1.0 = 正常人语速，范围 0.5–3.0
     @Published var defaultRate: Float = 1.0 { didSet { save("defaultRate", defaultRate) } }
     @Published var defaultVoiceIdentifier: String? { didSet { save("defaultVoiceIdentifier", defaultVoiceIdentifier) } }
-    /// 段落间停顿（秒）：段落末尾后多停一会儿再读下一段（0–5）
-    @Published var paragraphPause: Double = 0.45 { didSet { save("paragraphPause", paragraphPause) } }
-    /// 章节间停顿（秒）：读到「第X章/回/卷」开头时使用的更长停顿（0–10）
-    @Published var chapterPause: Double = 1.2 { didSet { save("chapterPause", chapterPause) } }
+    /// 段落间停顿（秒）：默认 0（不停顿）；用户可在设置里调（0–5）
+    @Published var paragraphPause: Double = 0 { didSet { save("paragraphPause", paragraphPause) } }
+    /// 章节间停顿（秒）：读到「第X章/回/卷」开头时使用的停顿；默认 0（0–10）
+    @Published var chapterPause: Double = 0 { didSet { save("chapterPause", chapterPause) } }
 
     // MARK: 按语言选声（v1 手动在设置里选声，朗读时按文本自动切换）
     @Published var voiceZhHans: String? { didSet { save("voiceZhHans", voiceZhHans) } }
@@ -86,8 +86,16 @@ final class AppSettings: ObservableObject {
         }
         if d.object(forKey: "defaultRate") != nil { defaultRate = d.float(forKey: "defaultRate") }
         defaultVoiceIdentifier = d.string(forKey: "defaultVoiceIdentifier")
-        if let p = d.object(forKey: "paragraphPause") as? Double { paragraphPause = p }
-        if let c = d.object(forKey: "chapterPause") as? Double { chapterPause = c }
+        // 停顿默认 0 迁移：老版本默认是 0.45/1.2，且滑块上限 5 秒，老用户可能缓存了很长停顿
+        // （表现为每段之间停 5 秒以上）。首次升级忽略旧缓存、锁定为 0；之后尊重用户主动设置。
+        if !d.bool(forKey: "pauseV2Migrated") {
+            paragraphPause = 0
+            chapterPause = 0
+            d.set(true, forKey: "pauseV2Migrated")
+        } else {
+            if let p = d.object(forKey: "paragraphPause") as? Double { paragraphPause = min(max(p, 0), 5) }
+            if let c = d.object(forKey: "chapterPause") as? Double { chapterPause = min(max(c, 0), 10) }
+        }
         voiceZhHans = d.string(forKey: "voiceZhHans")
         voiceZhHant = d.string(forKey: "voiceZhHant")
         voiceEn = d.string(forKey: "voiceEn")

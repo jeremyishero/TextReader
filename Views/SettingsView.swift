@@ -353,6 +353,16 @@ struct SettingsView: View {
                             .foregroundColor(.accentColor)
                             .cornerRadius(4)
                     }
+                    // 连续 3 次合成失败的音色标记为无效，提示用户该音色不可用（可点清除故障重试）
+                    if offlineMgr.invalidPackIds.contains(pack.id) {
+                        Text("无效")
+                            .font(.caption2)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.red.opacity(0.15))
+                            .foregroundColor(.red)
+                            .cornerRadius(4)
+                    }
                 }
                 Text(pack.repo.isEmpty
                      ? "\(pack.gender) · 从 zip 导入"
