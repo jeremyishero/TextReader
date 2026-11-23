@@ -165,9 +165,9 @@ final class OfflineTTSManager: ObservableObject {
     private var engines: [String: OpaquePointer] = [:]
     /// 引擎 LRU：键的最近使用顺序（末尾=最新），用于内存封顶。
     /// 每个引擎实例常驻约 40MB+；不设上限时多个角色加载多个包会累积到被 iOS Jetsam 杀掉
-    /// （后台无崩溃日志地退出）。上限 3 个实例 ≈ 120MB，兼顾音色切换与内存安全。
+    /// （后台无崩溃日志地退出）。上限 2 个实例 ≈ 80MB——后台内存预算低，必须更保守。
     private var engineLRU: [String] = []
-    private let maxEngineInstances = 3
+    private let maxEngineInstances = 2
 
     /// 合成时更新 LRU 顺序（在 engineQueue 内调用）。
     private func touchEngine(_ key: String) {

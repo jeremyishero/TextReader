@@ -529,28 +529,44 @@ final class TTSPlayer: NSObject, ObservableObject {
         // 当前段排队尾等满 8 秒超时——用户实测段间 8 秒停顿的根因）。
         // 等当前段开始播放后，再在播放期间预取后续段，合成与朗读重叠进行。
         let task = prepTask(for: idx)
+        let gen = pipelineGeneration
         Task { @MainActor in
             let ready = await Self.withTimeout(seconds: Self.currentSegmentWait) { await task.value }
-            guard self.isPlaying, self.currentIndex == idx else { return }
+            // 切章/stop 后本等待者已过期：新流程已接管，静默退出（并记日志便于诊断）。
+            guard self.pipelineGeneration == gen else {
+                AppLogger.log("speakCurrent idx=\(idx) 等待被切章/stop作废 gen=\(gen)→\(self.pipelineGeneration)")
+                return
+            }
+            guard self.isPlaying, self.currentIndex == idx else {
+                AppLogger.log("speakCurrent idx=\(idx) 状态不符 isPlaying=\(self.isPlaying) cur=\(self.currentIndex) → 强制开播本段")
+                // 不再静默 return：状态偶发不一致时也要把本段读出来，否则无 speak→无 didFinish→永久停。
+                self.forceSpeakSystem(raw: raw, idx: idx)
+                return
+            }
             if let p = ready {
                 self.consumePrepared(p, raw: raw, idx: idx)
             } else {
-                AppLogger.log("speakCurrent idx=\(idx) 等待\(Self.currentSegmentWait)s未就绪 → 系统声兜底")
-                self.currentSegmentIndex = idx
-                self.speakingRawText = raw
-                self.nowSpeakingText = raw
-                self.onIndexChange?(idx, self.mode == .segments)
-                self.updateNowPlaying()
-                self.synth.speak(self.buildUtterance(for: idx, text: raw))
+                self.forceSpeakSystem(raw: raw, idx: idx)
             }
             // 当前段已开播：此刻才预取后续段，与朗读重叠，不阻塞当前段
             self.prefetch(from: idx + 1)
         }
     }
 
-    /// 当前段等待离线合成的上限（秒）。2.5s 兼顾「保住离线音色」与「不出现长停顿」：
-    /// 旧值 8s 造成段间 8 秒停顿；0s 又让离线音色完全失效。
-    private static let currentSegmentWait: Double = 2.5
+    /// 强制用系统声朗读本段（等待超时 / 状态不一致的兜底），确保一定有 speak 推进流水线。
+    private func forceSpeakSystem(raw: String, idx: Int) {
+        AppLogger.log("speakCurrent idx=\(idx) 等待\(Self.currentSegmentWait)s未就绪 → 系统声兜底")
+        currentSegmentIndex = idx
+        speakingRawText = raw
+        nowSpeakingText = raw
+        onIndexChange?(idx, mode == .segments)
+        updateNowPlaying()
+        synth.speak(buildUtterance(for: idx, text: raw))
+    }
+
+    /// 当前段等待离线合成的上限（秒）。用户要求段间停顿 <1s，取 0.6s。
+    /// 离线合成若在 0.6s 内没好就系统声兜底——换取流畅；稳态下预取命中的段仍用离线音色。
+    private static let currentSegmentWait: Double = 0.6
 
     /// 给异步任务加超时：超时立即返回 nil，不等待原任务（原任务后台继续但不阻塞朗读）。
     /// 注意：不能用 withTaskGroup——它的 body 结束时会等待所有子任务，超时里 cancelAll 对
@@ -587,8 +603,16 @@ final class TTSPlayer: NSObject, ObservableObject {
         mode == .segments ? segments.count : plainChunks.count
     }
 
+    /// 流水线代次：每次 stop / 切章 / 重新起播 +1。
+    /// 旧的预取 Task 无法被真正取消（串行 engineQueue 里的 C 层合成为响应 cancel），
+    /// 用 generation 让它们完成时识别「我已过期」，不写回 prepared、不误删新章节的任务——
+    /// 否则切章后旧音频会污染新章节，或旧 Task 的 defer 把新 Task 从 prepTasks 里删掉，
+    /// 导致新章节等待一个已取消的 Task、永久无声。
+    private var pipelineGeneration: Int = 0
+
     /// 取消所有预取任务并清空缓冲（停止 / 跳转 / 重新开始时调用）。
     private func resetPipeline() {
+        pipelineGeneration += 1
         for (_, t) in prepTasks { t.cancel() }
         prepTasks.removeAll()
         prepared.removeAll()
@@ -607,10 +631,13 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 取（或创建）某个索引的预取任务；任务完成会把单元写入 prepared 缓存。
     private func prepTask(for idx: Int) -> Task<PreparedUnit?, Never> {
         if let t = prepTasks[idx] { return t }
+        let gen = pipelineGeneration
         let t = Task { @MainActor () async -> PreparedUnit? in
-            defer { self.prepTasks.removeValue(forKey: idx) }
             guard idx >= 0 else { return nil }
             let unit = await self.buildPrepared(idx)
+            // 代次变了（stop/切章）：旧结果作废，不写回、不动当前 prepTasks
+            guard self.pipelineGeneration == gen else { return nil }
+            self.prepTasks.removeValue(forKey: idx)
             if let u = unit { self.prepared[idx] = u }
             return unit
         }

@@ -210,8 +210,12 @@ struct ReadingView: View {
                 // （之前 AVAudioSession 中断 .ended 里无条件 continueSpeaking 导致「重进又读」，已在 TTSPlayer 修正）
                 syncHighlightNow()
             } else {
-                // 进后台/失活：落盘进度；不 stop 播放器，让音频会话在后台继续（audio 后台模式）
+                // 进后台/失活：落盘进度；不 stop 播放器，让音频会话在后台继续（audio 后台模式）。
+                // 关键：释放缓存的合成引擎——后台内存预算远低于前台，3 个引擎常驻约 120MB
+                // 会被 iOS Jetsam 无声杀掉（SIGKILL 无崩溃日志，表现为「读一两分钟自动退出」）。
+                // 已合成好的音频在 player 的 prepared 缓存里，释放引擎不影响正在播放的内容。
                 saveProgressNow()
+                OfflineTTSManager.shared.releaseIdleEngines(reason: "进入后台")
             }
         }
         .onDisappear {

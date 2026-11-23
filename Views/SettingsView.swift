@@ -8,6 +8,7 @@ struct SettingsView: View {
     @ObservedObject private var offlineMgr = OfflineTTSManager.shared
     @State private var showPackImporter = false
     @State private var showLogExport = false
+    @State private var showLogPreview = false    // 日志预览默认折叠，避免进设置页就同步读全文卡死
     @State private var packImportMsg: String? = nil
     /// 已安装包列表缓存：installedPacks() 是磁盘扫描，Form 多行渲染会反复求值，故只在
     /// 视图出现 / 安装状态版本变化时刷新一次。
@@ -17,18 +18,21 @@ struct SettingsView: View {
         installedPacksSnapshot = offlineMgr.installedPacks()
     }
 
+    // speechVoices() 全量枚举较慢，必须静态缓存一次（与 AnalysisView/TTSPlayer 一致）。
+    // 此前每次 body 求值都枚举，是设置页卡顿的原因之一。
+    private static let allVoices = AVSpeechSynthesisVoice.speechVoices()
     private var zhHansVoices: [AVSpeechSynthesisVoice] {
         // 白名单：只保留 Tingting（其余 zh-CN 系统声念中文口音生硬，用户要求去掉）；
         // 设备上没有 Tingting 时原样显示（防呆）。
-        TTSPlayer.keepTingting(AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh-CN") })
+        TTSPlayer.keepTingting(Self.allVoices.filter { $0.language.hasPrefix("zh-CN") })
     }
     private var zhHantVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices().filter {
+        Self.allVoices.filter {
             $0.language.hasPrefix("zh-TW") || $0.language.hasPrefix("zh-HK") || $0.language.hasPrefix("zh-Hant")
         }
     }
     private var enVoices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("en") }
+        Self.allVoices.filter { $0.language.hasPrefix("en") }
     }
 
     /// 从 zip 导入的自定义包（id 不在静态 packs 表里）。
@@ -95,13 +99,21 @@ struct SettingsView: View {
                 Section("朗读日志（供排查后台自动退出）") {
                     Text("记录播放/中断/合成/进入后台等事件。若遇「读着读着自动退出」，请点导出把日志发给开发者。")
                         .font(.caption2).foregroundColor(.secondary)
-                    ScrollView {
-                        Text(AppLogger.shared.logText)
-                            .font(.caption2)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .textSelection(.enabled)
+                    // 默认折叠：日志可能上万行，body 里同步读整文件+巨型 Text 渲染会卡死设置页。
+                    // 只在展开时读取，且只显示末尾 200 行（排查退出只需最后一刻的记录）。
+                    Button(showLogPreview ? "收起日志预览" : "展开日志预览（末尾200行）") {
+                        showLogPreview.toggle()
                     }
-                    .frame(maxHeight: 180)
+                    .buttonStyle(.bordered)
+                    if showLogPreview {
+                        ScrollView {
+                            Text(AppLogger.shared.tailText(lines: 200))
+                                .font(.caption2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 180)
+                    }
                     HStack {
                         Button("导出朗读日志") { showLogExport = true }
                             .buttonStyle(.bordered)
