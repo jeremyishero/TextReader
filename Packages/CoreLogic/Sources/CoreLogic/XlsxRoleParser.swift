@@ -8,11 +8,13 @@ public struct XlsxImportedRole {
     public var name: String
     public var aliases: [String]
     public var gender: Gender
+    public var age: Age
     public var note: String?
-    public init(name: String, aliases: [String], gender: Gender, note: String? = nil) {
+    public init(name: String, aliases: [String], gender: Gender, age: Age = .youth, note: String? = nil) {
         self.name = name
         self.aliases = aliases
         self.gender = gender
+        self.age = age
         self.note = note
     }
 }
@@ -46,11 +48,12 @@ public struct XlsxRoleParser {
 
         // 3) 按表头映射列（注意顺序：「性别」包含「别」字，必须先判性别再判别名）
         let header = grid[0]
-        var nameCol = -1, aliasCol = -1, genderCol = -1, noteCol = -1
+        var nameCol = -1, aliasCol = -1, genderCol = -1, ageCol = -1, noteCol = -1
         for (i, h) in header.enumerated() {
             let key = h.trimmingCharacters(in: .whitespacesAndNewlines)
             if key.contains("姓名") || key.contains("名字") { nameCol = i }
             else if key.contains("性别") { genderCol = i }
+            else if key == "年龄" || key.contains("年龄") { ageCol = i }
             else if key.contains("别") || key.contains("身份") { aliasCol = i }   // 别名 / 别称 / 别名/身份
             else if key.contains("性格") || key.contains("特点") || key.contains("备注") { noteCol = i }
         }
@@ -66,10 +69,12 @@ public struct XlsxRoleParser {
             let name = cell(nameCol)
             guard !name.isEmpty else { continue }
             let rawGender = cell(genderCol)
-            let gender: Gender = rawGender.contains("女") ? .female : (rawGender.contains("男") ? .male : .neutral)
+            let gender: Gender = rawGender.contains("女") ? .female : (rawGender.contains("男") ? .male : (rawGender.contains("太监") ? .eunuch : .neutral))
+            let rawAge = ageCol >= 0 ? cell(ageCol) : ""
+            let age: Age = Age.allCases.first { $0.cn == rawAge || $0.rawValue == rawAge } ?? .youth
             let note: String = noteCol >= 0 ? cell(noteCol) : ""
             let aliases = Self.parseAliases(cell(aliasCol))
-            roles.append(XlsxImportedRole(name: name, aliases: aliases, gender: gender, note: note.isEmpty ? nil : note))
+            roles.append(XlsxImportedRole(name: name, aliases: aliases, gender: gender, age: age, note: note.isEmpty ? nil : note))
         }
         return roles
     }
