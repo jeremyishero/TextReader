@@ -3,7 +3,7 @@ import ZIPFoundation
 
 /// 把当前角色列表导出成 .xlsx「人物解析表」。
 ///
-/// 表头与 `XlsxRoleParser` 完全兼容（姓名 / 别名·身份 / 性别），
+/// 表头与 `XlsxRoleParser` 完全兼容（姓名 / 别名·身份 / 性别 / 年龄），
 /// 导出的文件可以用「从表格导入(.xlsx)」原样导回，形成「导出 → 修改 → 导入」闭环。
 /// 额外附两列（台词数 / 声音）方便核对角色，导入时会被忽略。
 public struct XlsxRoleExporter {
@@ -25,7 +25,7 @@ public struct XlsxRoleExporter {
         }
 
         // ---- 1) 表格内容 ----
-        var rows: [[String]] = [["姓名", "别名/身份", "性别", "台词数", "声音"]]
+        var rows: [[String]] = [["姓名", "别名/身份", "性别", "年龄", "台词数", "声音"]]
         for role in roles {
             let aliases = role.aliases
                 .filter { $0 != role.canonicalName }
@@ -35,6 +35,7 @@ public struct XlsxRoleExporter {
                 role.canonicalName,
                 aliases,
                 g,
+                role.age.cn,
                 String(quoteCounts[role.id] ?? 0),
                 role.voiceHint ?? "默认"
             ])
@@ -50,7 +51,7 @@ public struct XlsxRoleExporter {
         sst += "</sst>"
 
         // ---- 3) worksheet ----
-        let cols = ["A", "B", "C", "D", "E"]
+        let cols = ["A", "B", "C", "D", "E", "F"]
         var sheet = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>

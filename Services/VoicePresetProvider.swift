@@ -7,6 +7,8 @@ struct VoicePreset: Identifiable {
     let id: String
     let label: String
     let gender: Gender
+    let age: Age              // 年龄段（child/teen/youth/adult/senior）
+    let timbre: String        // 粗细（coarse/medium/fine）
     let tier: String          // primary=正式 / special=专用(太监) / standby=备用
     let packId: String
     let sid: Int32
@@ -44,9 +46,12 @@ enum VoicePresetProvider {
                   let g = gmap[it["gender"] as? String ?? ""],
                   let sidNum = it["sid"] as? NSNumber else { continue }
             let speed = (it["speed"] as? NSNumber)?.doubleValue ?? 1.0
+            let age = Age(rawValue: (it["age"] as? String) ?? "") ?? .youth
             cache.append(VoicePreset(id: id,
                                      label: (it["label"] as? String) ?? id,
                                      gender: g,
+                                     age: age,
+                                     timbre: (it["timbre"] as? String) ?? "medium",
                                      tier: (it["tier"] as? String) ?? "standby",
                                      packId: packId,
                                      sid: sidNum.int32Value,
@@ -85,15 +90,16 @@ enum VoicePresetProvider {
 
     /// 不重复的全局音色分配：按传入角色顺序，为每类音色依次分配一个未被占用的预设。
     /// 同一角色稳定（外部按稳定排序的角色列表调用）；音色用完则为 nil（调用方回退系统默认声）。
+    /// 年龄优先：先按「性别+年龄段」精确匹配，该年龄段音色用尽后回落到同性别其它年龄段。
     /// - Parameters:
-    ///   - orderedRoles: 已按频次降序排好的 (id, gender)；主角在前。
+    ///   - orderedRoles: 已按频次降序排好的 (id, gender, age)；主角在前。
     ///   - overrides: 用户手动指定的角色音色（preset:<id>），这些角色占用其指定音色且不再参与自动分配。
     /// - Returns: 角色 id → (packId, sid, speed, label)；未分配的角色不在字典中（回退系统默认）。
-    static func assignDistinct(orderedRoles: [(id: String, gender: Gender)],
+    static func assignDistinct(orderedRoles: [(id: String, gender: Gender, age: Age)],
                                overrides: [String: String] = [:])
         -> [String: (packId: String, sid: Int32, speed: Float, label: String)] {
         let enabled = all().filter { $0.enabled }
-        func pool(for g: Gender) -> [VoicePreset] {
+        func genderPool(for g: Gender) -> [VoicePreset] {
             switch g {
             case .eunuch: return enabled.filter { $0.gender == .eunuch }
             case .male:   return enabled.filter { $0.gender == .male || $0.gender == .eunuch }
@@ -110,10 +116,12 @@ enum VoicePresetProvider {
                 used.insert(p.id)
             }
         }
-        // 再自动分配未指定的角色：按频次顺序依次取该性别池里未被占用的第一个
-        // 池用尽 → 该角色不分配（外部回退系统默认声）
+        // 再自动分配未指定的角色：年龄精确匹配优先，用尽后回落同性别池，再回落到全部启用音色
         for r in orderedRoles where result[r.id] == nil {
-            guard let p = pool(for: r.gender).first(where: { !used.contains($0.id) }) else { continue }
+            let gp = genderPool(for: r.gender)
+            let sameAge = gp.filter { $0.age == r.age && !used.contains($0.id) }
+            let candidates = sameAge.isEmpty ? gp.filter { !used.contains($0.id) } : sameAge
+            guard let p = candidates.first else { continue }
             result[r.id] = (p.packId, p.sid, p.speed, p.label)
             used.insert(p.id)
         }

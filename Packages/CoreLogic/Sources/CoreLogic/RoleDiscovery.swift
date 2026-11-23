@@ -478,6 +478,29 @@ public struct JiebaStyleAnalyzer {
         return .neutral
     }
 
+    /// 年龄判定：称谓关键词优先（老者/童子/少年等），再看名字里的年龄用字，
+    /// 无年龄线索默认 youth（青年）。alias 一并检查——「韩立/韩兄」里的「兄」不算老。
+    private static func age(of name: String, aliases: [String] = []) -> Age {
+        let all = [name] + aliases
+        // 老年线索：老/翁/婆/妪/公/叟/祖 + 长尊称
+        let seniorWords: [String] = ["老祖","老怪","老者","老翁","老妪","老妇","老婆","老道","老汉","太上","尊者",
+                                     "仙翁","道翁","祖父","曾祖","师祖","祖师","长老","前辈","老朽","老夫"]
+        for w in all where seniorWords.contains(where: { w.contains($0) }) { return .senior }
+        // 中年线索：中年/大汉/壮汉/掌柜/大夫/将军（成年但不老）
+        let adultWords: [String] = ["中年","壮汉","大汉","掌柜","大夫","将军","掌门","门主","宗主","当家"]
+        for w in all where adultWords.contains(where: { w.contains($0) }) { return .adult }
+        // 童年线索：童/小孩/孩童/幼
+        let childWords: [String] = ["童子","小孩","孩童","幼童","小娃","童儿"]
+        for w in all where childWords.contains(where: { w.contains($0) }) { return .child }
+        // 少年线索：少年/少侠/小姐(年轻女)/公子/少爷 + 「小」 prefix 绰号
+        let teenWords: [String] = ["少年","少侠","少女","小姐","公子","少爷","少主","小算盘"]
+        for w in all where teenWords.contains(where: { w.contains($0) }) { return .teen }
+        // 名字用字兜底：老/翁→senior，童/娃→child（仅当出现在名尾，避免误判姓）
+        let given = String(name.dropFirst(surname(of: name).count))
+        if given.contains(where: { ["老","翁","叟"].contains($0) }) { return .senior }
+        return .youth
+    }
+
     // MARK: - 对外入口
     public func analyze(_ text: String, userStopwords: Set<String> = [],
                         userWhitelist: Set<String> = []) -> AnalysisResult {
@@ -553,12 +576,13 @@ public struct JiebaStyleAnalyzer {
         var idByName: [String: String] = [:]
         for (idx, s) in ordered.enumerated() {
             let g = Self.gender(of: s.name, isProtagonist: idx == 0)
+            let a = Self.age(of: s.name)
             let id = "role_\(idx)"
             idByName[s.name] = id
             let identity: RoleIdentity = idx == 0 ? .protagonist : (idx < 10 ? .supporting : .extra)
             let hint = g == .male || g == .eunuch ? "male" : (g == .female ? "female" : "neutral")
             roles.append(CharacterRole(id: id, canonicalName: s.name, aliases: [s.name],
-                                       gender: g, voiceHint: hint, identity: identity))
+                                       gender: g, age: a, voiceHint: hint, identity: identity))
         }
 
         // ---- 第二趟：按全文顺序输出 segments（旁白 + 对白），保证朗读覆盖全文 ----

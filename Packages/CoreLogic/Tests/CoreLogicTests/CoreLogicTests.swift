@@ -347,9 +347,9 @@ final class CoreLogicTests: XCTestCase {
     func testXlsxRoleExportRoundTrip() throws {
         let roles = [
             CharacterRole(id: "r1", canonicalName: "慕容衍",
-                          aliases: ["慕容衍", "太子", "吴七"], gender: .male, voiceHint: "male"),
+                          aliases: ["慕容衍", "太子", "吴七"], gender: .male, age: .adult, voiceHint: "male"),
             CharacterRole(id: "r2", canonicalName: "徐镜儿",
-                          aliases: ["徐镜儿"], gender: .female)
+                          aliases: ["徐镜儿"], gender: .female, age: .teen)
         ]
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -363,9 +363,11 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(parsed.count, 2, "导出表应能被导入器读回")
         XCTAssertEqual(parsed.first?.name, "慕容衍")
         XCTAssertEqual(parsed.first?.gender, .male)
+        XCTAssertEqual(parsed.first?.age, .adult, "年龄列应能读回")
         XCTAssertEqual(parsed.first?.aliases, ["太子", "吴七"], "别名列应按顿号还原")
         XCTAssertEqual(parsed.last?.name, "徐镜儿")
         XCTAssertEqual(parsed.last?.gender, .female)
+        XCTAssertEqual(parsed.last?.age, .teen, "年龄列应能读回")
     }
 
     // MARK: - v7 引号后/冒号前 说话人归因修复回归

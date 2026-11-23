@@ -9,7 +9,7 @@ public struct CloudAnalyzer {
 
     private let systemPrompt = """
     你是一个中文小说解析助手。给定小说文本，请识别所有人物角色，并把同一人物的姓名、称谓、代词、描述词合并为同一个角色（给出稳定 id）。
-    判断每个角色的性别（male/female/neutral）。把文本切分为若干朗读分段，每段标注说话角色 id（旁白为 null）与情绪（neutral/joy/anger/sorrow/happiness）。
+    判断每个角色的性别（male/female/neutral）和年龄段（child童年/teen少年/youth青年/adult中年/senior老年，无法判断填 youth）。把文本切分为若干朗读分段，每段标注说话角色 id（旁白为 null）与情绪（neutral/joy/anger/sorrow/happiness）。
     只输出 JSON，不要任何解释。
     """
 
@@ -21,7 +21,7 @@ public struct CloudAnalyzer {
 
         严格按照如下 JSON 结构输出：
         {
-          "roles": [{"id":"角色ID","name":"主名称","aliases":["别名1","别名2"],"gender":"male|female|neutral"}],
+          "roles": [{"id":"角色ID","name":"主名称","aliases":["别名1","别名2"],"gender":"male|female|neutral","age":"child|teen|youth|adult|senior"}],
           "segments": [{"text":"句子或台词","charId":"角色ID或null","emotion":"neutral|joy|anger|sorrow|happiness"}]
         }
         charId 为 null 表示旁白/叙述。
@@ -84,7 +84,8 @@ public struct CloudAnalyzer {
             let name = (r["name"] as? String) ?? id
             let aliases = (r["aliases"] as? [String]) ?? [name]
             let gender: Gender = (r["gender"] as? String).flatMap { Gender(rawValue: $0) } ?? .neutral
-            roles.append(CharacterRole(id: id, canonicalName: name, aliases: aliases, gender: gender, voiceHint: nil))
+            let age: Age = (r["age"] as? String).flatMap { Age(rawValue: $0) } ?? .youth
+            roles.append(CharacterRole(id: id, canonicalName: name, aliases: aliases, gender: gender, age: age, voiceHint: nil))
         }
 
         var segs: [SpeechSegment] = []

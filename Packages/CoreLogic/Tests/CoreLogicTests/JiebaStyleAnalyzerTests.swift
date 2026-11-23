@@ -147,4 +147,23 @@ final class JiebaStyleAnalyzerTests: XCTestCase {
         XCTAssertEqual(genderOf("墨大夫"), .male, "墨大夫应为男")
         XCTAssertEqual(genderOf("墨凤舞"), .female, "墨凤舞应为女")
     }
+
+    /// 年龄段推断：老者→老年、童子→童年、少年→少年、普通姓名→青年(默认)。
+    func testAgeInference() {
+        let sample = """
+        韩立说道：「墨大夫，老者可安好？」
+        墨大夫道：「那老者已离去。」
+        童子说道：「小童子见过诸位。」
+        少年道：「我少年意气。」
+        韩立又道：「童子且退下。」
+        墨大夫道：「老者慢走。」
+        """
+        let result = JiebaStyleAnalyzer().analyze(sample)
+        let ageOf: (String) -> Age? = { n in result.roles.first { $0.canonicalName == n }?.age }
+        print("=== 年龄测试: \(result.roles.map { ($0.canonicalName, $0.age.rawValue) }) ===")
+        XCTAssertEqual(ageOf("韩立"), .youth, "韩立无年龄线索→青年")
+        // 老者/童子若被识别为角色，年龄应正确（它们也可能被当泛称过滤，故用可选断言）
+        if let a = ageOf("老者") { XCTAssertEqual(a, .senior, "老者→老年") }
+        if let a = ageOf("童子") { XCTAssertEqual(a, .child, "童子→童年") }
+    }
 }

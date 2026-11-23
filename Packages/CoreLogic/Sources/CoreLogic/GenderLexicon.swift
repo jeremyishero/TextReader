@@ -9,6 +9,28 @@ public enum Gender: String, Codable, CaseIterable, Sendable {
     case eunuch
 }
 
+/// 角色年龄（用于按年龄段匹配音色）。rawValue 对齐 VoicePresets.json 的 axes.age id。
+/// 无年龄线索时默认 youth（青年）——小说主角多为青年，且音色池里青年最多。
+public enum Age: String, Codable, CaseIterable, Sendable {
+    case child    // 童年
+    case teen     // 少年
+    case youth    // 青年（默认）
+    case adult    // 中年
+    case senior   // 老年
+}
+
+extension Age {
+    public var cn: String {
+        switch self {
+        case .child: return "童年"
+        case .teen: return "少年"
+        case .youth: return "青年"
+        case .adult: return "中年"
+        case .senior: return "老年"
+        }
+    }
+}
+
 /// 角色身份（重要度）：主角 / 配角 / 路人。
 /// 路人只作占位展示（如「那人」类泛称可选归入），朗读时路人可回落中性声。
 public enum RoleIdentity: String, Codable, CaseIterable, Sendable {

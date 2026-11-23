@@ -37,19 +37,23 @@ struct AnalysisView: View {
     @State private var editingRole: CharacterRole? = nil
     @State private var editNameText: String = ""
     @State private var editGender: Gender = .neutral
+    @State private var editAge: Age = .youth
     @State private var editIdentity: RoleIdentity = .supporting
     // 添加角色（角色面板「+」）：字段与白名单一致，直接写入角色表
     @State private var showAddRoleSheet = false
     @State private var addRoleName = ""
     @State private var addRoleGender: Gender = .neutral
+    @State private var addRoleAge: Age = .youth
     @State private var addRoleIdentity: RoleIdentity = .supporting
     @State private var addRoleVoice = ""          // voiceOverrides 值；"" = 按性别自动分配
     // 白名单添加表单（性别/身份/声音直接落到角色表）
     @State private var newWhiteGender: Gender = .neutral
+    @State private var newWhiteAge: Age = .youth
     @State private var newWhiteIdentity: RoleIdentity = .supporting
     @State private var newWhiteVoice = ""
     // 黑名单添加表单（黑名单语义是「永不识别」，性别/身份/声音暂存不生效）
     @State private var newBlackGender: Gender = .neutral
+    @State private var newBlackAge: Age = .youth
     @State private var newBlackIdentity: RoleIdentity = .supporting
     @State private var newBlackVoice = ""
     // 规则类型：替换 / 跳过
@@ -85,7 +89,7 @@ struct AnalysisView: View {
     @State private var exportError: String? = nil
     // 导入方式二选一：替换所有已存在角色 / 新增到现有角色
     @State private var showImportModeDialog = false
-    @State private var pendingImport: [(name: String, gender: Gender, aliases: [String])]? = nil
+    @State private var pendingImport: [(name: String, gender: Gender, age: Age, aliases: [String])]? = nil
     // 角色多选删除（长按进入）
     @State private var multiSelectMode = false
     @State private var selectedRoleIds: Set<String> = []
@@ -612,6 +616,13 @@ struct AnalysisView: View {
                         .background(genderColor(role.gender).opacity(0.15))
                         .foregroundColor(genderColor(role.gender))
                         .cornerRadius(5)
+                    Text(role.age.cn)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.purple.opacity(0.15))
+                        .foregroundColor(.purple)
+                        .cornerRadius(5)
                     // 拉黑：确认后把该角色（称呼 + 别名）移入黑名单，重新解析时不再识别
                     Button {
                         blacklistTarget = role
@@ -625,6 +636,7 @@ struct AnalysisView: View {
                         editingRole = role
                         editNameText = role.canonicalName
                         editGender = role.gender
+                        editAge = role.age
                         editIdentity = role.identity
                         showEditSheet = true
                     } label: {
@@ -731,6 +743,9 @@ struct AnalysisView: View {
                 Text("太监").tag(Gender.eunuch)
             }
             .pickerStyle(.segmented)
+            Picker("年龄", selection: $newBlackAge) {
+                ForEach(Age.allCases, id: \.self) { a in Text(a.cn).tag(a) }
+            }
             Picker("身份", selection: $newBlackIdentity) {
                 Text("主角").tag(RoleIdentity.protagonist)
                 Text("配角").tag(RoleIdentity.supporting)
@@ -765,6 +780,9 @@ struct AnalysisView: View {
                 Text("太监").tag(Gender.eunuch)
             }
             .pickerStyle(.segmented)
+            Picker("年龄", selection: $newWhiteAge) {
+                ForEach(Age.allCases, id: \.self) { a in Text(a.cn).tag(a) }
+            }
             Picker("身份", selection: $newWhiteIdentity) {
                 Text("主角").tag(RoleIdentity.protagonist)
                 Text("配角").tag(RoleIdentity.supporting)
@@ -802,10 +820,11 @@ struct AnalysisView: View {
         // 元数据落角色表
         if let idx = analysis.roles.firstIndex(where: { $0.canonicalName == word || $0.aliases.contains(word) }) {
             analysis.roles[idx].gender = newWhiteGender
+            analysis.roles[idx].age = newWhiteAge
             analysis.roles[idx].identity = newWhiteIdentity
         } else {
             analysis.roles.append(CharacterRole(id: "user_" + word, canonicalName: word,
-                                                aliases: [word], gender: newWhiteGender,
+                                                aliases: [word], gender: newWhiteGender, age: newWhiteAge,
                                                 identity: newWhiteIdentity))
         }
         if !newWhiteVoice.isEmpty {
@@ -1156,6 +1175,11 @@ struct AnalysisView: View {
                     }
                     .pickerStyle(.segmented)
                 }
+                Section("年龄（用于按年龄段选声）") {
+                    Picker("年龄", selection: $editAge) {
+                        ForEach(Age.allCases, id: \.self) { a in Text(a.cn).tag(a) }
+                    }
+                }
                 Section("身份（主角 / 配角 / 路人）") {
                     Picker("身份", selection: $editIdentity) {
                         Text("主角").tag(RoleIdentity.protagonist)
@@ -1189,8 +1213,10 @@ struct AnalysisView: View {
               let idx = analysis.roles.firstIndex(where: { $0.id == target.id }) else { return }
         let old = analysis.roles[idx].canonicalName
         let genderChanged = analysis.roles[idx].gender != editGender
+        let ageChanged = analysis.roles[idx].age != editAge
         analysis.roles[idx].canonicalName = newName
         analysis.roles[idx].gender = editGender
+        analysis.roles[idx].age = editAge
         analysis.roles[idx].identity = editIdentity
         if old != newName, !analysis.roles[idx].aliases.contains(old) {
             analysis.roles[idx].aliases.append(old)
@@ -1200,8 +1226,8 @@ struct AnalysisView: View {
             voiceDraft.removeValue(forKey: old)
             voiceDraft[newName] = v
         }
-        // 性别变化：清掉离线语音包分配缓存，下次朗读按新性别重新匹配声音
-        if genderChanged {
+        // 性别/年龄变化：清掉离线语音包分配缓存，下次朗读按新维度重新匹配声音
+        if genderChanged || ageChanged {
             OfflineTTSManager.shared.resetAssignments()
         }
         onEdited?()
@@ -1226,6 +1252,11 @@ struct AnalysisView: View {
                         Text("太监").tag(Gender.eunuch)
                     }
                     .pickerStyle(.segmented)
+                }
+                Section("年龄（用于按年龄段选声）") {
+                    Picker("年龄", selection: $addRoleAge) {
+                        ForEach(Age.allCases, id: \.self) { a in Text(a.cn).tag(a) }
+                    }
                 }
                 Section("身份（主角 / 配角 / 路人）") {
                     Picker("身份", selection: $addRoleIdentity) {
@@ -1266,10 +1297,11 @@ struct AnalysisView: View {
         // 防重复：已存在同称呼角色则只更新属性
         if let idx = analysis.roles.firstIndex(where: { $0.canonicalName == name || $0.aliases.contains(name) }) {
             analysis.roles[idx].gender = addRoleGender
+            analysis.roles[idx].age = addRoleAge
             analysis.roles[idx].identity = addRoleIdentity
         } else {
             analysis.roles.append(CharacterRole(id: "user_" + name, canonicalName: name,
-                                                aliases: [name], gender: addRoleGender,
+                                                aliases: [name], gender: addRoleGender, age: addRoleAge,
                                                 identity: addRoleIdentity))
         }
         if !addRoleVoice.isEmpty {
@@ -1370,9 +1402,9 @@ struct AnalysisView: View {
 
     /// 解析「人物：X，性别：男/女 + 别称：…」格式的文本。容错：性别缺失视为中性；
     /// 别称行支持顿号/逗号分隔多个；未写「人物」前缀但含性别/单独成行的名字也可识别为人物行。
-    private func parseImportedRoles(_ text: String) -> [(name: String, gender: Gender, aliases: [String])] {
-        var result: [(name: String, gender: Gender, aliases: [String])] = []
-        var current: (name: String, gender: Gender, aliases: [String])? = nil
+    private func parseImportedRoles(_ text: String) -> [(name: String, gender: Gender, age: Age, aliases: [String])] {
+        var result: [(name: String, gender: Gender, age: Age, aliases: [String])] = []
+        var current: (name: String, gender: Gender, age: Age, aliases: [String])? = nil
 
         func flush() {
             if let c = current, !c.name.isEmpty { result.append(c) }
@@ -1381,7 +1413,11 @@ struct AnalysisView: View {
         func parseGender(_ s: String) -> Gender {
             if s.contains("女") { return .female }
             if s.contains("男") { return .male }
+            if s.contains("太监") { return .eunuch }
             return .neutral
+        }
+        func parseAge(_ s: String) -> Age {
+            Age.allCases.first { s.contains($0.cn) } ?? .youth
         }
         func parsePersonLine(_ line: String) {
             flush()
@@ -1391,17 +1427,19 @@ struct AnalysisView: View {
             body = body.trimmingCharacters(in: CharacterSet(charactersIn: "：: "))
             var name = body
             var gender: Gender = .neutral
+            var age: Age = .youth
             if let r = body.range(of: "性别") {
                 let before = String(body[..<r.lowerBound]).trimmingCharacters(in: CharacterSet(charactersIn: "，, "))
                 let after = String(body[r.lowerBound...])
                 name = before
                 gender = parseGender(after)
+                age = parseAge(after)
             } else if body.hasSuffix("男") || body.hasSuffix("女") {
                 gender = body.hasSuffix("女") ? .female : .male
                 name = String(body.dropLast(1)).trimmingCharacters(in: CharacterSet(charactersIn: "，, "))
             }
             name = name.trimmingCharacters(in: CharacterSet(charactersIn: "，, "))
-            if !name.isEmpty { current = (name, gender, []) }
+            if !name.isEmpty { current = (name, gender, age, []) }
         }
 
         for rawLine in importText.components(separatedBy: .newlines) {
@@ -1425,7 +1463,7 @@ struct AnalysisView: View {
     }
 
     /// 导入入口：解析成功后先暂存，弹出「替换 / 新增」二选一
-    private func requestImport(_ parsed: [(name: String, gender: Gender, aliases: [String])]) {
+    private func requestImport(_ parsed: [(name: String, gender: Gender, age: Age, aliases: [String])]) {
         guard !parsed.isEmpty else {
             importSummary = "没有解析到任何角色。请检查格式：\n人物：X，性别：男/女\n别称：…\n或表格含「姓名」「性别」列。"
             return
@@ -1449,6 +1487,7 @@ struct AnalysisView: View {
                     canonicalName: p.name,
                     aliases: p.aliases,
                     gender: p.gender,
+                    age: p.age,
                     voiceHint: hint
                 ))
             }
@@ -1491,6 +1530,7 @@ struct AnalysisView: View {
                         role.gender = p.gender
                         role.voiceHint = p.gender == .male ? "male" : "female"
                     }
+                    role.age = p.age
                     analysis.roles[idx] = role
                     merged += 1
                 } else {
@@ -1503,6 +1543,7 @@ struct AnalysisView: View {
                         canonicalName: p.name,
                         aliases: safeAliases,
                         gender: p.gender,
+                        age: p.age,
                         voiceHint: hint
                     ))
                     created += 1
@@ -1528,7 +1569,7 @@ struct AnalysisView: View {
             importSummary = "未能从该表格解析到角色。请确认是人物解析表（含「姓名」「性别」列的工作表）。"
             return
         }
-        requestImport(parsed.map { (name: $0.name, gender: $0.gender, aliases: $0.aliases) })
+        requestImport(parsed.map { (name: $0.name, gender: $0.gender, age: $0.age, aliases: $0.aliases) })
     }
 
     // MARK: 导入其他文档配置

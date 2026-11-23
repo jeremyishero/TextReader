@@ -8,21 +8,23 @@ public struct CharacterRole: Identifiable, Codable {
     public var canonicalName: String      // 主名称（通常为出现频次最高的姓名）
     public var aliases: [String]          // 合并进来的所有称呼（林风/林兄/那少年/他…）
     public var gender: Gender             // 多角度投票得出
+    public var age: Age                   // 年龄段（默认 youth；旧缓存缺省补 youth）
     public var voiceHint: String?         // "male" / "female" / "neutral"，App 端映射到 AVSpeechSynthesisVoice
     public var identity: RoleIdentity     // 主角/配角/路人（默认配角；旧缓存缺省补 supporting）
 
     public init(id: String, canonicalName: String, aliases: [String], gender: Gender,
-                voiceHint: String? = nil, identity: RoleIdentity = .supporting) {
+                age: Age = .youth, voiceHint: String? = nil, identity: RoleIdentity = .supporting) {
         self.id = id
         self.canonicalName = canonicalName
         self.aliases = aliases
         self.gender = gender
+        self.age = age
         self.voiceHint = voiceHint
         self.identity = identity
     }
 
-    // 旧 <docId>.analysis.json 缓存没有 identity 字段 → decodeIfPresent 补默认，避免反序列化整体失败
-    private enum CodingKeys: String, CodingKey { case id, canonicalName, aliases, gender, voiceHint, identity }
+    // 旧 <docId>.analysis.json 缓存没有 identity/age 字段 → decodeIfPresent 补默认，避免反序列化整体失败
+    private enum CodingKeys: String, CodingKey { case id, canonicalName, aliases, gender, age, voiceHint, identity }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -30,6 +32,7 @@ public struct CharacterRole: Identifiable, Codable {
         canonicalName = try c.decode(String.self, forKey: .canonicalName)
         aliases = try c.decode([String].self, forKey: .aliases)
         gender = try c.decode(Gender.self, forKey: .gender)
+        age = try c.decodeIfPresent(Age.self, forKey: .age) ?? .youth
         voiceHint = try c.decodeIfPresent(String.self, forKey: .voiceHint)
         identity = try c.decodeIfPresent(RoleIdentity.self, forKey: .identity) ?? .supporting
     }
@@ -540,7 +543,8 @@ public struct CharacterAnalyzer {
             if let id = resolveAlias(surface) { addAlias(surface, to: id); return id }
             let g = genderFor(surface)
             let id = "role_\(roles.count)"
-            let role = CharacterRole(id: id, canonicalName: surface, aliases: [surface], gender: g, voiceHint: hintFor(g))
+            let role = CharacterRole(id: id, canonicalName: surface, aliases: [surface], gender: g,
+                                     age: ageFor(surface), voiceHint: hintFor(g))
             roles.append(role)
             aliasToRole[surface] = id
             return id
@@ -1021,4 +1025,17 @@ public struct CharacterAnalyzer {
             if surface == "他" { score.add(.male, weight: 1) }
             return score.result(threshold: 0)
         }
+
+    /// 年龄判定：称谓关键词优先（老者→senior、童子→child、少年→teen 等），无线索默认 youth。
+    private func ageFor(_ surface: String) -> Age {
+        let senior = ["老祖","老者","老翁","老妪","老妇","老道","老汉","师祖","祖师","长老","前辈","老朽","老夫"]
+        if senior.contains(where: { surface.contains($0) }) { return .senior }
+        let adult = ["中年","壮汉","大汉","掌柜","大夫","将军","掌门","门主","宗主"]
+        if adult.contains(where: { surface.contains($0) }) { return .adult }
+        let child = ["童子","小孩","孩童","幼童","小娃","童儿"]
+        if child.contains(where: { surface.contains($0) }) { return .child }
+        let teen = ["少年","少侠","少女","小姐","公子","少爷","少主"]
+        if teen.contains(where: { surface.contains($0) }) { return .teen }
+        return .youth
+    }
 }

@@ -723,7 +723,7 @@ struct ReadingView: View {
                 if r.identity == .protagonist { return false }
             }
             return (freq[l.id] ?? 0) > (freq[r.id] ?? 0)
-        }.map { (id: $0.id, gender: $0.gender) }
+        }.map { (id: $0.id, gender: $0.gender, age: $0.age) }
         var overridesById: [String: String] = [:]
         for role in a.roles {
             if let choice = voiceOverrides[role.canonicalName] { overridesById[role.id] = choice }

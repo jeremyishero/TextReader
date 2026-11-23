@@ -406,7 +406,7 @@ final class OfflineTTSManager: ObservableObject {
     /// 结果写入 roleAssignments/presetSpeeds，后续每段台词直接命中缓存，声音全程稳定。
     /// - Returns: 未分配到内置音色的角色 id 集合（这些角色朗读时回退系统默认声）。
     @discardableResult
-    func applyDistinctAssignments(orderedRoles: [(id: String, gender: Gender)],
+    func applyDistinctAssignments(orderedRoles: [(id: String, gender: Gender, age: Age)],
                                   overrides: [String: String]) -> Set<String> {
         let installed = Set(installedPacks().map(\.id))
         let presetResult = VoicePresetProvider.assignDistinct(orderedRoles: orderedRoles,
