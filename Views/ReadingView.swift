@@ -206,16 +206,21 @@ struct ReadingView: View {
             // 记录生命周期：区分「被系统杀掉（冷启动）」与「中断暂停（热恢复）」
             AppLogger.log("scenePhase=\(phase) isPlaying=\(player.isPlaying) idx=\(player.currentSegmentIndex)")
             if phase == .active {
-                // 从后台回到前台：只同步高亮，不自动恢复朗读
+                // 从后台回到前台：恢复预取 + 同步高亮，不自动恢复朗读
                 // （之前 AVAudioSession 中断 .ended 里无条件 continueSpeaking 导致「重进又读」，已在 TTSPlayer 修正）
+                player.setSceneActive(true)
                 syncHighlightNow()
-            } else {
-                // 进后台/失活：落盘进度；不 stop 播放器，让音频会话在后台继续（audio 后台模式）。
-                // 关键：释放缓存的合成引擎——后台内存预算远低于前台，3 个引擎常驻约 120MB
-                // 会被 iOS Jetsam 无声杀掉（SIGKILL 无崩溃日志，表现为「读一两分钟自动退出」）。
-                // 已合成好的音频在 player 的 prepared 缓存里，释放引擎不影响正在播放的内容。
+            } else if phase == .background {
+                // 进后台：落盘进度；不 stop 播放器，让音频会话在后台继续（audio 后台模式）。
+                // 关键（真机日志证实）：后台必须停止新合成——iOS CPU 节流把 VITS 推理拖到 20 秒/段，
+                // 持续占用导致 App 被强杀，且合成结果因段早已读完而 100% 作废。
+                // setSceneActive(false) 让后续预取只走系统声；已合成好的音频在 prepared 缓存里正常播。
                 saveProgressNow()
+                player.setSceneActive(false)
                 OfflineTTSManager.shared.releaseIdleEngines(reason: "进入后台")
+            } else {
+                // inactive（临时失活，如控制中心上拉）：只落盘，不改合成状态
+                saveProgressNow()
             }
         }
         .onDisappear {

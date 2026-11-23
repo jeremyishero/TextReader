@@ -127,9 +127,14 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 进行中的预取任务（索引 → Task）。
     private var prepTasks: [Int: Task<PreparedUnit?, Never>] = [:]
     /// 预取窗口：当前段播放时预合成其后多少段。
-    /// 引擎是串行的，预取过多会让队列堆积、当前段排长队（曾经 depth=4 导致段间 8 秒停顿）。
-    /// 取 2：既让合成与朗读重叠，又不让队列堵住下一段。
-    private let prefetchDepth = 2
+    /// 引擎串行、单段合成可达 10-20 秒（真机日志实测），窗口太小会让合成永远跟不上朗读；
+    /// 取 8：前台边读边备货，给合成足够提前量，稳态下后续段能命中离线音色。
+    private let prefetchDepth = 8
+
+    /// 前台/后台标志：进后台后禁止启动新的离线/云端合成。
+    /// 真机日志证实：后台合成被 iOS CPU 节流拖到 20 秒/段，持续占用导致 App 被强杀；
+    /// 而合成结果因段早已读完而 100% 作废。进后台只播放已备好的音频 + 系统声。
+    private var isSceneActive = true
 
     /// 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech。
     /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
@@ -345,6 +350,20 @@ final class TTSPlayer: NSObject, ObservableObject {
         return languageVoices[lang]
     }
 
+    // MARK: 前后台切换
+
+    /// 由 ReadingView 的 scenePhase 调用。进后台停合成（已在途的无法中断，但不再新增），
+    /// 回前台恢复预取。避免后台合成被 CPU 节流拖垮 App。
+    func setSceneActive(_ active: Bool) {
+        isSceneActive = active
+        if active {
+            AppLogger.log("回到前台：恢复预取 isPlaying=\(isPlaying) idx=\(currentIndex)")
+            if isPlaying { prefetch(from: currentIndex + 1) }
+        } else {
+            AppLogger.log("进入后台：暂停新合成 isPlaying=\(isPlaying) idx=\(currentIndex)")
+        }
+    }
+
     // MARK: 播放控制
 
     func playSegments(_ segments: [SpeechSegment], startIndex: Int = 0, cloud: Bool = false) {
@@ -524,38 +543,17 @@ final class TTSPlayer: NSObject, ObservableObject {
             prefetch(from: idx + 1)
             return
         }
-        // 预取未就绪：给当前段一次有界等待，优先拿到离线音色。
-        // 关键：此刻不预取后续段，让当前段独占串行引擎（旧实现同时预取 4 段把队列塞满，
-        // 当前段排队尾等满 8 秒超时——用户实测段间 8 秒停顿的根因）。
-        // 等当前段开始播放后，再在播放期间预取后续段，合成与朗读重叠进行。
-        let task = prepTask(for: idx)
-        let gen = pipelineGeneration
-        Task { @MainActor in
-            let ready = await Self.withTimeout(seconds: Self.currentSegmentWait) { await task.value }
-            // 切章/stop 后本等待者已过期：新流程已接管，静默退出（并记日志便于诊断）。
-            guard self.pipelineGeneration == gen else {
-                AppLogger.log("speakCurrent idx=\(idx) 等待被切章/stop作废 gen=\(gen)→\(self.pipelineGeneration)")
-                return
-            }
-            guard self.isPlaying, self.currentIndex == idx else {
-                AppLogger.log("speakCurrent idx=\(idx) 状态不符 isPlaying=\(self.isPlaying) cur=\(self.currentIndex) → 强制开播本段")
-                // 不再静默 return：状态偶发不一致时也要把本段读出来，否则无 speak→无 didFinish→永久停。
-                self.forceSpeakSystem(raw: raw, idx: idx)
-                return
-            }
-            if let p = ready {
-                self.consumePrepared(p, raw: raw, idx: idx)
-            } else {
-                self.forceSpeakSystem(raw: raw, idx: idx)
-            }
-            // 当前段已开播：此刻才预取后续段，与朗读重叠，不阻塞当前段
-            self.prefetch(from: idx + 1)
-        }
+        // 预取未就绪：立即用系统声朗读，零等待。
+        // 真机日志实测：离线合成 10-20 秒/段，而朗读 5-7 秒/段——任何"等待"都等不到，
+        // 只会制造停顿。离线音色完全依赖前置预取命中（窗口 8 提前备货），不在当前段等待。
+        AppLogger.log("speakCurrent idx=\(idx) 预取未命中 → 系统声（零等待）")
+        forceSpeakSystem(raw: raw, idx: idx)
+        // 当前段已开播：后台/前台都继续维护预取窗口（后台 buildPrepared 会自动跳过合成）
+        prefetch(from: idx + 1)
     }
 
-    /// 强制用系统声朗读本段（等待超时 / 状态不一致的兜底），确保一定有 speak 推进流水线。
+    /// 强制用系统声朗读本段，确保一定有 speak 推进流水线（避免卡死）。
     private func forceSpeakSystem(raw: String, idx: Int) {
-        AppLogger.log("speakCurrent idx=\(idx) 等待\(Self.currentSegmentWait)s未就绪 → 系统声兜底")
         currentSegmentIndex = idx
         speakingRawText = raw
         nowSpeakingText = raw
@@ -563,10 +561,6 @@ final class TTSPlayer: NSObject, ObservableObject {
         updateNowPlaying()
         synth.speak(buildUtterance(for: idx, text: raw))
     }
-
-    /// 当前段等待离线合成的上限（秒）。用户要求段间停顿 <1s，取 0.6s。
-    /// 离线合成若在 0.6s 内没好就系统声兜底——换取流畅；稳态下预取命中的段仍用离线音色。
-    private static let currentSegmentWait: Double = 0.6
 
     /// 给异步任务加超时：超时立即返回 nil，不等待原任务（原任务后台继续但不阻塞朗读）。
     /// 注意：不能用 withTaskGroup——它的 body 结束时会等待所有子任务，超时里 cancelAll 对
@@ -650,6 +644,9 @@ final class TTSPlayer: NSObject, ObservableObject {
     private func prefetch(from start: Int) {
         let total = totalCount()
         guard isPlaying, start < total else { return }
+        // 后台：完全不创建预取任务（连系统声单元都不预建），杜绝任何引擎/合成交互——
+        // 真机日志证实后台合成是 App 被强杀的直接诱因。回前台会重新 prefetch 补货。
+        guard isSceneActive else { return }
         let end = min(start + prefetchDepth, total)
         for i in start..<end {
             if prepared[i] == nil && prepTasks[i] == nil {
@@ -683,6 +680,11 @@ final class TTSPlayer: NSObject, ObservableObject {
         let processed = applyCustomRules(text)
         // 手工指定「系统声」的角色：跳过离线/云端，让 roleVoices 真正生效
         if !segId.isEmpty, manualSystemVoiceIds.contains(segId) {
+            return .utterance(buildUtterance(for: idx, text: processed))
+        }
+        // 后台：绝不启动新的离线/云端合成。真机日志证实后台合成被 CPU 节流拖到 20 秒/段，
+        // 持续占用会让 App 被系统强杀；且合成结果因段早已读完而用不上。后台只播系统声。
+        guard isSceneActive else {
             return .utterance(buildUtterance(for: idx, text: processed))
         }
         // 手工指定离线包：在 @MainActor 上下文读取映射，合成闭包只接收值类型参数，
