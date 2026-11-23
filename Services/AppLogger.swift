@@ -45,6 +45,9 @@ final class AppLogger {
         if let handle {
             handle.seekToEndOfFile()
             handle.write(data)
+            // 必须立即刷盘：App 被 iOS 强杀(SIGKILL)时进程内缓冲全丢，
+            // 不 synchronize 就看不到「退出前最后一行」，日志失去诊断价值。
+            try? handle.synchronize()
         }
         rotateIfNeeded()
     }
@@ -67,11 +70,30 @@ final class AppLogger {
         return (try? String(contentsOf: url, encoding: .utf8)) ?? "（暂无日志）"
     }
 
-    /// 设置页预览：从内存环形缓冲取末尾若干行，零磁盘 IO，不会卡 UI。
+    /// 设置页预览：从**文件末尾**读末尾若干行——重启后仍能看到上次退出前的记录。
+    /// 只读最后 64KB（不是整份文件），避免大日志卡 UI；主文件超 1MB 会轮转到 .1.txt，
+    /// 故两份文件都读末尾后合并取最后 N 行。
     func tailText(lines: Int) -> String {
         lock.lock(); defer { lock.unlock() }
-        let tail = ring.suffix(max(0, lines))
-        return tail.isEmpty ? "（暂无日志）" : tail.joined()
+        try? handle?.synchronize()   // 把内存句柄缓冲刷盘，确保读到最新日志
+        var all: [String] = []
+        let files = [url, url.deletingLastPathComponent().appendingPathComponent("朗读日志.1.txt")]
+        for f in files {
+            guard fm.fileExists(atPath: f.path),
+                  let readHandle = try? FileHandle(forReadingFrom: f) else { continue }
+            let size = (try? readHandle.seekToEnd()) ?? 0
+            let readLen = Int(min(size, 64 * 1024))
+            if readLen > 0 {
+                readHandle.seek(toFileOffset: size - UInt64(readLen))
+                if let data = try? readHandle.read(upToCount: readLen),
+                   let text = String(data: data, encoding: .utf8) {
+                    all.append(contentsOf: text.split(separator: "\n").map(String.init))
+                }
+            }
+            try? readHandle.close()
+        }
+        let tail = all.suffix(max(0, lines))
+        return tail.isEmpty ? "（暂无日志）" : tail.joined(separator: "\n")
     }
 
     var logURL: URL { url }

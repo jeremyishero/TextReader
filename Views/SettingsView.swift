@@ -7,7 +7,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var offlineMgr = OfflineTTSManager.shared
     @State private var showPackImporter = false
-    @State private var showLogExport = false
     @State private var showLogPreview = false    // 日志预览默认折叠，避免进设置页就同步读全文卡死
     @State private var packImportMsg: String? = nil
     /// 已安装包列表缓存：installedPacks() 是磁盘扫描，Form 多行渲染会反复求值，故只在
@@ -115,14 +114,15 @@ struct SettingsView: View {
                         .frame(maxHeight: 180)
                     }
                     HStack {
-                        Button("导出朗读日志") { showLogExport = true }
-                            .buttonStyle(.bordered)
+                        // ShareLink：SwiftUI 原生分享，不会像 UIActivityViewController 当 sheet 内容那样
+                        // 把设置页一起 dismiss（用户实测点导出直接退出设置页）。
+                        ShareLink(item: AppLogger.shared.logURL) {
+                            Label("导出朗读日志", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.bordered)
                         Button("清除日志") { AppLogger.shared.clear() }
                             .buttonStyle(.bordered)
                     }
-                }
-                .sheet(isPresented: $showLogExport) {
-                    LogExportView(url: AppLogger.shared.logURL)
                 }
 
                 Section("默认语速") {
@@ -496,13 +496,4 @@ struct SettingsView: View {
             }
         }
     }
-}
-
-/// 导出朗读日志文件（系统分享面板）
-private struct LogExportView: UIViewControllerRepresentable {
-    let url: URL
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
-    }
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
