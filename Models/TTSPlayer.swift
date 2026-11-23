@@ -124,10 +124,12 @@ final class TTSPlayer: NSObject, ObservableObject {
     }
     /// 已准备好的单元（索引 → 单元）。轮到该段时直接消费，无需现场等待合成。
     private var prepared: [Int: PreparedUnit] = [:]
-    /// 进行中的预取任务（索引 → Task）。最多 prefetchDepth 个并发，对应「四个进程交替解析朗读」。
+    /// 进行中的预取任务（索引 → Task）。
     private var prepTasks: [Int: Task<PreparedUnit?, Never>] = [:]
-    /// 预取窗口：当前段播放时，并行预合成其后这么多段，保证朗读不卡顿。
-    private let prefetchDepth = 4
+    /// 预取窗口：当前段播放时预合成其后多少段。
+    /// 引擎是串行的，预取过多会让队列堆积、当前段排长队（曾经 depth=4 导致段间 8 秒停顿）。
+    /// 取 2：既让合成与朗读重叠，又不让队列堵住下一段。
+    private let prefetchDepth = 2
 
     /// 合成优先级：离线语音包 → 云端 TTS → 本地 AVSpeech。
     /// offlineProvider/cloudProvider 由 ReadingView 按当前文档/设置注入，未启用时返回 nil 自动降级。
@@ -522,21 +524,33 @@ final class TTSPlayer: NSObject, ObservableObject {
             prefetch(from: idx + 1)
             return
         }
-        // 预取未就绪：立即用系统声朗读本段，绝不阻塞等待离线合成。
-        // 旧实现 await withTimeout(seconds: 8) 会让当前段在串行 engineQueue 里排队等满 8 秒
-        // （4 路预取任务把队列塞满，当前段排队尾），用户实测「每段之间停顿 8 秒」正源于此，
-        // 且与 paragraphPause 设置无关（故设为 0 无效）。
-        // 离线合成仍在后台预取，就绪后写入 prepared 供后续段使用—— speeds up when it can,
-        // but never blocks the current segment。
-        AppLogger.log("speakCurrent idx=\(idx) 预取未就绪 → 立即系统声（不阻塞）")
-        currentSegmentIndex = idx
-        speakingRawText = raw
-        nowSpeakingText = raw
-        onIndexChange?(idx, mode == .segments)
-        updateNowPlaying()
-        synth.speak(buildUtterance(for: idx, text: raw))
-        prefetch(from: idx + 1)
+        // 预取未就绪：给当前段一次有界等待，优先拿到离线音色。
+        // 关键：此刻不预取后续段，让当前段独占串行引擎（旧实现同时预取 4 段把队列塞满，
+        // 当前段排队尾等满 8 秒超时——用户实测段间 8 秒停顿的根因）。
+        // 等当前段开始播放后，再在播放期间预取后续段，合成与朗读重叠进行。
+        let task = prepTask(for: idx)
+        Task { @MainActor in
+            let ready = await Self.withTimeout(seconds: Self.currentSegmentWait) { await task.value }
+            guard self.isPlaying, self.currentIndex == idx else { return }
+            if let p = ready {
+                self.consumePrepared(p, raw: raw, idx: idx)
+            } else {
+                AppLogger.log("speakCurrent idx=\(idx) 等待\(Self.currentSegmentWait)s未就绪 → 系统声兜底")
+                self.currentSegmentIndex = idx
+                self.speakingRawText = raw
+                self.nowSpeakingText = raw
+                self.onIndexChange?(idx, self.mode == .segments)
+                self.updateNowPlaying()
+                self.synth.speak(self.buildUtterance(for: idx, text: raw))
+            }
+            // 当前段已开播：此刻才预取后续段，与朗读重叠，不阻塞当前段
+            self.prefetch(from: idx + 1)
+        }
     }
+
+    /// 当前段等待离线合成的上限（秒）。2.5s 兼顾「保住离线音色」与「不出现长停顿」：
+    /// 旧值 8s 造成段间 8 秒停顿；0s 又让离线音色完全失效。
+    private static let currentSegmentWait: Double = 2.5
 
     /// 给异步任务加超时：超时立即返回 nil，不等待原任务（原任务后台继续但不阻塞朗读）。
     /// 注意：不能用 withTaskGroup——它的 body 结束时会等待所有子任务，超时里 cancelAll 对

@@ -22,9 +22,11 @@ struct TextReaderApp: App {
             .environmentObject(store)
             .environmentObject(player)
             .environmentObject(settings)
-            // 内存警告是「后台朗读被 jetsam 杀掉」的直接前兆，必须记录
+            // 内存警告是「后台朗读被 jetsam 杀掉」的直接前兆：记录 + 主动释放缓存引擎，
+            // 避免实例累积把 App 顶到内存上限被系统无声杀掉（SIGKILL 无崩溃日志）。
             .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
                 AppLogger.log("⚠️ MEMORY WARNING isPlaying=\(player.isPlaying)")
+                OfflineTTSManager.shared.releaseIdleEngines(reason: "内存警告")
             }
         }
     }

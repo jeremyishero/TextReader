@@ -163,6 +163,49 @@ final class OfflineTTSManager: ObservableObject {
     private let fm = FileManager.default
     private let engineQueue = DispatchQueue(label: "offline.tts.engine")   // 引擎加载/合成串行
     private var engines: [String: OpaquePointer] = [:]
+    /// 引擎 LRU：键的最近使用顺序（末尾=最新），用于内存封顶。
+    /// 每个引擎实例常驻约 40MB+；不设上限时多个角色加载多个包会累积到被 iOS Jetsam 杀掉
+    /// （后台无崩溃日志地退出）。上限 3 个实例 ≈ 120MB，兼顾音色切换与内存安全。
+    private var engineLRU: [String] = []
+    private let maxEngineInstances = 3
+
+    /// 合成时更新 LRU 顺序（在 engineQueue 内调用）。
+    private func touchEngine(_ key: String) {
+        engineLRU.removeAll { $0 == key }
+        engineLRU.append(key)
+    }
+
+    /// 淘汰超出上限的最旧引擎（在 engineQueue 内调用）；不淘汰当前正在合成的 key。
+    private func evictEngines(protecting protectedKey: String? = nil) {
+        while engineLRU.count > maxEngineInstances {
+            guard let oldest = engineLRU.first else { break }
+            if oldest == protectedKey, engineLRU.count > 1 {
+                // 最旧的是正在用的：跳过它，淘汰次旧的
+                guard engineLRU.count > 2 else { break }
+                let victim = engineLRU[1]
+                engineLRU.removeAll { $0 == victim }
+                if let tts = engines.removeValue(forKey: victim) { SherpaOnnxDestroyOfflineTts(tts) }
+                AppLogger.log("引擎LRU淘汰:\(victim) 剩余\(engineLRU.count)")
+            } else {
+                engineLRU.removeFirst()
+                if let tts = engines.removeValue(forKey: oldest) { SherpaOnnxDestroyOfflineTts(tts) }
+                AppLogger.log("引擎LRU淘汰:\(oldest) 剩余\(engineLRU.count)")
+            }
+        }
+    }
+
+    /// 收到内存警告时释放所有已缓存引擎（下次用到会重新加载）。
+    /// 由 TextReaderApp 的 didReceiveMemoryWarning 调用，避免 Jetsam 杀进程。
+    func releaseIdleEngines(reason: String = "内存警告") {
+        engineQueue.async { [weak self] in
+            guard let self else { return }
+            let count = self.engines.count
+            for (_, tts) in self.engines { SherpaOnnxDestroyOfflineTts(tts) }
+            self.engines.removeAll()
+            self.engineLRU.removeAll()
+            AppLogger.log("⚠️ \(reason)：释放 \(count) 个空闲引擎")
+        }
+    }
 
     private var packsRoot: URL {
         fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -259,6 +302,7 @@ final class OfflineTTSManager: ObservableObject {
                 if let tts = engines.removeValue(forKey: key) {
                     SherpaOnnxDestroyOfflineTts(tts)
                 }
+                engineLRU.removeAll { $0 == key }
             }
             failedPacks.remove(id)
             failureCounts.removeValue(forKey: id)
@@ -527,6 +571,9 @@ final class OfflineTTSManager: ObservableObject {
         if failedPacks.contains(packId) {
             return nil
         }
+        let started = Date()
+        let key = packId
+        let wasCached = engines[key] != nil     // 记录是否首次加载（首次含模型加载耗时）
         guard let tts = loadEngine(packId: packId, dir: dir) else {
             noteFailure(packId)   // 引擎加载失败也计入连续失败
             return nil
@@ -534,16 +581,21 @@ final class OfflineTTSManager: ObservableObject {
         let actual: Int32 = SherpaOnnxOfflineTtsNumSpeakers(tts) > 1 ? sid : 0
         if let d = engineSynthesize(text: text, packId: packId, dir: dir, tts: tts, sid: actual, speed: speed) {
             noteSuccess(packId)
+            AppLogger.log(String(format: "合成成功 %@ 字数%ld 缓存=%@ 耗时%.2fs",
+                                 packId, Int64(text.count), wasCached ? "命中" : "首次",
+                                 Date().timeIntervalSince(started)))
             return d
         }
         if let alt = loadEngine(packId: packId, dir: dir, useRuleFsts: false) {
             let altSid: Int32 = SherpaOnnxOfflineTtsNumSpeakers(alt) > 1 ? sid : 0
             if let d = engineSynthesize(text: text, packId: packId, dir: dir, tts: alt, sid: altSid, speed: speed) {
                 noteSuccess(packId)
+                AppLogger.log(String(format: "合成成功(无FST) %@ 耗时%.2fs", packId, Date().timeIntervalSince(started)))
                 return d
             }
         }
         noteFailure(packId)   // 本次调用两次引擎尝试均失败 → 连续失败 +1
+        AppLogger.log(String(format: "合成失败 %@ 耗时%.2fs", packId, Date().timeIntervalSince(started)))
         return nil
     }
 
@@ -903,7 +955,10 @@ final class OfflineTTSManager: ObservableObject {
     ///   便于在「带 FST 产出静音」时用无 FST 引擎重试。
     private func loadEngine(packId: String, dir: String, useRuleFsts: Bool = true) -> OpaquePointer? {
         let key = useRuleFsts ? packId : packId + "#nofst"
-        if let cached = engines[key] { return cached }
+        if let cached = engines[key] {
+            touchEngine(key)
+            return cached
+        }
         let fm = FileManager.default
 
         func firstFile(matching predicate: (String) -> Bool) -> String? {
@@ -955,6 +1010,8 @@ final class OfflineTTSManager: ObservableObject {
             return nil
         }
         engines[key] = tts
+        touchEngine(key)
+        evictEngines(protecting: key)   // 内存封顶：淘汰最旧实例，保留刚加载/正在用的
         return tts
     }
 
