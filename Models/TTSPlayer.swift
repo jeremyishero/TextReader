@@ -522,26 +522,19 @@ final class TTSPlayer: NSObject, ObservableObject {
             prefetch(from: idx + 1)
             return
         }
-        let task = prepTask(for: idx)
-        Task { @MainActor in
-            // 合成超时兜底：离线引擎偶发卡住（加载 115MB 模型 / 串行 engineQueue 堵塞）时，
-            // 原实现 await task.value 无超时会永久无声。8 秒未就绪就改用系统声朗读本段，
-            // 保证朗读不中断；预取任务仍在后台继续，就绪后写入缓存供后续使用。
-            let ready = await Self.withTimeout(seconds: 8) { await task.value }
-            if ready == nil { AppLogger.log("speakCurrent TIMEOUT idx=\(idx) → 系统声兜底") }
-            guard self.isPlaying, self.currentIndex == idx else { return }
-            if let p = ready {
-                self.consumePrepared(p, raw: raw, idx: idx)
-            } else {
-                // 超时或合成返回 nil → 直接系统声读本段（respected 手工音色）
-                self.currentSegmentIndex = idx
-                self.speakingRawText = raw
-                self.nowSpeakingText = raw
-                self.onIndexChange?(idx, self.mode == .segments)
-                self.updateNowPlaying()
-                self.synth.speak(self.buildUtterance(for: idx, text: raw))
-            }
-        }
+        // 预取未就绪：立即用系统声朗读本段，绝不阻塞等待离线合成。
+        // 旧实现 await withTimeout(seconds: 8) 会让当前段在串行 engineQueue 里排队等满 8 秒
+        // （4 路预取任务把队列塞满，当前段排队尾），用户实测「每段之间停顿 8 秒」正源于此，
+        // 且与 paragraphPause 设置无关（故设为 0 无效）。
+        // 离线合成仍在后台预取，就绪后写入 prepared 供后续段使用—— speeds up when it can,
+        // but never blocks the current segment。
+        AppLogger.log("speakCurrent idx=\(idx) 预取未就绪 → 立即系统声（不阻塞）")
+        currentSegmentIndex = idx
+        speakingRawText = raw
+        nowSpeakingText = raw
+        onIndexChange?(idx, mode == .segments)
+        updateNowPlaying()
+        synth.speak(buildUtterance(for: idx, text: raw))
         prefetch(from: idx + 1)
     }
 
