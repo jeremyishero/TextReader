@@ -153,6 +153,9 @@ final class TTSPlayer: NSObject, ObservableObject {
 
     /// 角色面板手工指定的离线包：characterId → (packId, sid)。命中时绕过性别池自动分配。
     var manualOfflinePacks: [String: (packId: String, sid: Int32)] = [:]
+    /// 主角/配角声音槽（characterId → 指定声音），由 ReadingView 按全局设置+角色重要度构建。
+    /// 优先级低于手工指定(manualOfflinePacks)、高于性别池自动分配。
+    var roleSlotVoices: [String: (packId: String, sid: Int32)] = [:]
     /// 角色面板手工指定了「系统声」的角色：跳过离线/云端合成，强制走 AVSpeech 的 roleVoices，
     /// 否则离线（优先级更高）会无声覆盖用户的选择。
     var manualSystemVoiceIds: Set<String> = []
@@ -540,6 +543,11 @@ final class TTSPlayer: NSObject, ObservableObject {
             Task { @MainActor in self?.pause() }
             return .success
         }
+        // 锁屏/控制中心的「停止」按钮：此前未注册，按了没反应。
+        rc.stopCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.pause() }   // 语义=停止发声；保留会话便于「继续」
+            return .success
+        }
         rc.togglePlayPauseCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.remoteToggle() }
             return .success
@@ -725,9 +733,52 @@ final class TTSPlayer: NSObject, ObservableObject {
             mode: mode == .segments ? "seg" : "plain",
             manualPacks: manualOfflinePacks,
             manualSystemIds: manualSystemVoiceIds,
+            roleSlots: roleSlotVoices,
             defaultVoice: defaultVoice?.identifier,
             rate: rate
         )
+    }
+
+    /// 未播放时预合成后续段落到磁盘缓存（自动预合成开关用）。
+    /// 逐段：命中缓存跳过 → 否则用当前音色合成 → 写缓存。每段之间让出，播放一开始立即停止。
+    /// - Parameters:
+    ///   - units: 待合成的段 (文本, 角色id, 性别)
+    ///   - shouldStop: 返回 true 时立即中止（播放开始/进后台），闭包在主线程调用
+    func preSynthesize(_ units: [(text: String, characterId: String, gender: Gender)],
+                       documentId: String,
+                       shouldStop: @escaping @MainActor () -> Bool) async {
+        let sig = AudioCache.voiceSignature(
+            documentId: documentId,
+            mode: mode == .segments ? "seg" : "plain",
+            manualPacks: manualOfflinePacks,
+            manualSystemIds: manualSystemVoiceIds,
+            roleSlots: roleSlotVoices,
+            defaultVoice: defaultVoice?.identifier,
+            rate: rate
+        )
+        let docId: String? = documentId
+        for unit in units {
+            if await shouldStop() { break }
+            let processed = applyCustomRules(unit.text)
+            // 已缓存则跳过
+            if AudioCache.shared.data(documentId: docId, text: processed, voiceSig: sig) != nil { continue }
+            // 手工指定系统声的角色无需预合成（系统声不走缓存）
+            if !unit.characterId.isEmpty, manualSystemVoiceIds.contains(unit.characterId) { continue }
+            var data: Data?
+            if !unit.characterId.isEmpty, let manual = manualOfflinePacks[unit.characterId],
+               let synth = manualOfflineSynth {
+                data = await synth(processed, manual.packId, manual.sid, rate)
+            }
+            if data == nil, let offlineProvider {
+                data = await offlineProvider(processed, unit.gender, unit.characterId)
+            }
+            if let data {
+                AudioCache.shared.store(documentId: docId, text: processed, voiceSig: sig, data: data)
+            }
+            // 让出主线程一步，避免长时间占用
+            await Task.yield()
+        }
+        AppLogger.log("预合成任务结束（处理 \(units.count) 段）")
     }
 
     /// 构建某索引的待播单元：磁盘缓存 → 离线语音包 → 云端 TTS → 系统 AVSpeech。

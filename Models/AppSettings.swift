@@ -64,6 +64,22 @@ final class AppSettings: ObservableObject {
     /// 多音色包（如 AISHELL3）作旁白时的说话人编号；单音色包忽略。
     @Published var narrationOfflineSID: Int = 0 { didSet { save("narrationOfflineSID", narrationOfflineSID) } }
 
+    /// 未播放时自动预合成后续内容（存磁盘缓存，播放时零等待）。仅在前台进行；进后台暂停以免被系统杀。
+    @Published var autoPreSynthEnabled: Bool = false { didSet { save("autoPreSynthEnabled", autoPreSynthEnabled) } }
+    /// 自动预合成段数（当前进度之后）。默认 30 段。
+    @Published var autoPreSynthCount: Int = 30 { didSet { save("autoPreSynthCount", autoPreSynthCount) } }
+
+    // MARK: 主角 / 配角声音槽（全局；按角色重要度自动分配，优先级低于角色面板手选）
+    // 每个槽 = packId + sid。packId 为空表示该槽未设置，回退到现有分配逻辑。
+    @Published var protagonist1PackId: String = "" { didSet { save("protagonist1PackId", protagonist1PackId) } }
+    @Published var protagonist1SID: Int = 0 { didSet { save("protagonist1SID", protagonist1SID) } }
+    @Published var protagonist2PackId: String = "" { didSet { save("protagonist2PackId", protagonist2PackId) } }
+    @Published var protagonist2SID: Int = 0 { didSet { save("protagonist2SID", protagonist2SID) } }
+    @Published var supporting1PackId: String = "" { didSet { save("supporting1PackId", supporting1PackId) } }
+    @Published var supporting1SID: Int = 0 { didSet { save("supporting1SID", supporting1SID) } }
+    @Published var supporting2PackId: String = "" { didSet { save("supporting2PackId", supporting2PackId) } }
+    @Published var supporting2SID: Int = 0 { didSet { save("supporting2SID", supporting2SID) } }
+
     init() { load() }
 
     // MARK: 持久化
@@ -120,6 +136,17 @@ final class AppSettings: ObservableObject {
         }
         if let p = d.string(forKey: "narrationOfflinePackId") { narrationOfflinePackId = p }
         if d.object(forKey: "narrationOfflineSID") != nil { narrationOfflineSID = d.integer(forKey: "narrationOfflineSID") }
+        if d.object(forKey: "autoPreSynthEnabled") != nil { autoPreSynthEnabled = d.bool(forKey: "autoPreSynthEnabled") }
+        if d.object(forKey: "autoPreSynthCount") != nil { autoPreSynthCount = d.integer(forKey: "autoPreSynthCount") }
+        // 主角/配角声音槽
+        if let p = d.string(forKey: "protagonist1PackId") { protagonist1PackId = p }
+        if d.object(forKey: "protagonist1SID") != nil { protagonist1SID = d.integer(forKey: "protagonist1SID") }
+        if let p = d.string(forKey: "protagonist2PackId") { protagonist2PackId = p }
+        if d.object(forKey: "protagonist2SID") != nil { protagonist2SID = d.integer(forKey: "protagonist2SID") }
+        if let p = d.string(forKey: "supporting1PackId") { supporting1PackId = p }
+        if d.object(forKey: "supporting1SID") != nil { supporting1SID = d.integer(forKey: "supporting1SID") }
+        if let p = d.string(forKey: "supporting2PackId") { supporting2PackId = p }
+        if d.object(forKey: "supporting2SID") != nil { supporting2SID = d.integer(forKey: "supporting2SID") }
     }
 
     /// nil 值不能直接 set：首次启动 load() 会把 String? 属性置为 nil，didSet 触发本方法时

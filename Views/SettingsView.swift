@@ -182,6 +182,17 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    roleVoiceRow("主角①", packId: $settings.protagonist1PackId, sid: $settings.protagonist1SID)
+                    roleVoiceRow("主角②", packId: $settings.protagonist2PackId, sid: $settings.protagonist2SID)
+                    roleVoiceRow("配角①", packId: $settings.supporting1PackId, sid: $settings.supporting1SID)
+                    roleVoiceRow("配角②", packId: $settings.supporting2PackId, sid: $settings.supporting2SID)
+                    Text("按角色重要度自动分配：主角①/② 分配给最重要的两个主角，配角①/② 分配给最重要的两个配角。选「不指定」则沿用原有声音分配。角色面板里手动指定的声音优先级更高。选离线包后需先下载/导入该包并启用离线朗读。")
+                        .font(.caption).foregroundColor(.secondary)
+                } header: {
+                    Text("主角 / 配角声音（按重要度自动分配）")
+                }
+
+                Section {
                     voicePicker("声音", voices: zhHantVoices, selection: $settings.voiceZhHant)
                     Text("繁体内容（zh-TW / zh-HK）朗读时使用；未选择则用系统繁体默认声。")
                         .font(.caption).foregroundColor(.secondary)
@@ -210,6 +221,16 @@ struct SettingsView: View {
                     Toggle("启用离线语音包朗读", isOn: $settings.offlineTTSEnabled)
                     Text("下载到手机本地，完全离线合成，优先级高于云端 TTS。模型来自 sherpa-onnx 社区开放模型（国内经 hf-mirror 镜像下载）。")
                         .font(.caption).foregroundColor(.secondary)
+                    Toggle("未播放时自动预合成后续内容", isOn: $settings.autoPreSynthEnabled)
+                    if settings.autoPreSynthEnabled {
+                        Picker("预合成段数", selection: $settings.autoPreSynthCount) {
+                            Text("10 段").tag(10)
+                            Text("30 段").tag(30)
+                            Text("100 段").tag(100)
+                        }
+                        Text("空闲时把当前进度之后的段落提前合成并存缓存，播放时零等待、直接用离线音色。仅前台进行；开始播放或切到后台会暂停。合成较耗时、会耗电。缓存上限 150MB。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                     if let diag = offlineMgr.lastOfflineError {
                         Text("⚠️ 离线合成诊断：" + diag)
                             .font(.caption)
@@ -315,6 +336,26 @@ struct SettingsView: View {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("完成") { dismiss() }
                 }
+            }
+        }
+    }
+
+    /// 主角/配角声音行：只选离线包（保证按角色精确控制音色），多音色包可填说话人编号。
+    @ViewBuilder
+    private func roleVoiceRow(_ label: String, packId: Binding<String>, sid: Binding<Int>) -> some View {
+        Picker(label, selection: packId) {
+            Text("不指定").tag("")
+            ForEach(installedPacksSnapshot) { pack in
+                Text(pack.displayName + "（离线包）").tag(pack.id)
+            }
+        }
+        if !packId.wrappedValue.isEmpty {
+            let staticMulti = OfflineTTSManager.packs.first(where: { $0.id == packId.wrappedValue })?.gender == "多音色"
+            let importedMulti = settings.offlinePackGenders[packId.wrappedValue] == "multi"
+            if staticMulti || importedMulti {
+                TextField("说话人编号", value: sid, format: .number)
+                    .keyboardType(.numberPad)
+                    .autocorrectionDisabled()
             }
         }
     }

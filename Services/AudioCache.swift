@@ -28,6 +28,7 @@ final class AudioCache {
                                mode: String,
                                manualPacks: [String: (packId: String, sid: Int32)],
                                manualSystemIds: Set<String>,
+                               roleSlots: [String: (packId: String, sid: Int32)],
                                defaultVoice: String?,
                                rate: Float) -> String {
         var parts: [String] = [documentId ?? "", mode]
@@ -35,6 +36,11 @@ final class AudioCache {
         for key in manualPacks.keys.sorted() {
             let v = manualPacks[key]!
             parts.append("\(key)=\(v.packId):\(v.sid)")
+        }
+        // 主角/配角声音槽：任一槽变化都让旧缓存失效，避免串音
+        for key in roleSlots.keys.sorted() {
+            let v = roleSlots[key]!
+            parts.append("role=\(key):\(v.packId):\(v.sid)")
         }
         parts.append("sys=\(manualSystemIds.sorted().joined(separator: ","))")
         parts.append("def=\(defaultVoice ?? "")")
