@@ -208,9 +208,13 @@ public struct JiebaStyleAnalyzer {
             let limit = min(n, qend + 20)
             while pe < limit && !postStop.contains(chars[pe]) { pe += 1 }
             let post = String(chars[qend..<pe]).trimmingCharacters(in: .whitespaces)
-            // 正引号前面紧邻的字符必须是冒号（：或 :），才是「某人说道：“…”」的角色对话。
-            // 无冒号的引号内容（引用/强调/书名）按旁白处理，不切换角色声音。
-            let hasColon = i > 0 && (chars[i - 1] == "：" || chars[i - 1] == ":")
+            // 旁白判定：纯引号包裹且「前面无冒号 + 引号内末尾无标点」的内容（引用/强调/书名/心理描写）
+            // 一律用旁白音色，不分配给任何角色。
+            // 即：只有“有冒号”或“引号内以标点收尾”时才可能是角色台词；两者都没有则判旁白。
+            let openHasColon = i > 0 && (chars[i - 1] == "：" || chars[i - 1] == ":")
+            let closingPunct: Set<Character> = ["。","！","？","!","?","；",";","，",",","、","：",":","…","—","－","·"]
+            let innerEndsWithPunct = j > start && closingPunct.contains(chars[j - 1])
+            let hasColon = openHasColon || innerEndsWithPunct
             res.append(Dialogue(pre: pre, post: post, text: qtext, hasColon: hasColon,
                                 quoteStart: i, quoteEnd: qend))
             i = qend
