@@ -147,6 +147,19 @@ public struct JiebaStyleAnalyzer {
         !s.isEmpty && s.allSatisfy(isHan)
     }
 
+    /// 判断单字符是否为标点：Unicode punctuation 类别 + 常见中文标点兜底。
+    /// 用于「反引号紧邻前一个字符是否无任何标点」的判定。
+    private static let extraPunct: Set<Character> = [
+        "。","！","？","；","，","、","：","…","—","·","～",
+        "《","》","〈","〉","「","」","『","』","（","）","【","】","〔","〕","〖","〗",
+        "“","”","‘","’","\"","'","(",")","[","]","{","}","<",">",
+        "!","?",";",",",":","-","_","~","%","@","&","*","/","\\","|"
+    ]
+    private static func isPunctuation(_ ch: Character) -> Bool {
+        if extraPunct.contains(ch) { return true }
+        return ch.unicodeScalars.allSatisfy { CharacterSet.punctuationCharacters.contains($0) }
+    }
+
     /// 引号归一：所有常见引号统一成 “ ”，交替配对
     private static func preprocess(_ raw: String) -> String {
         let noCR = raw.replacingOccurrences(of: "\r", with: "")
@@ -208,12 +221,13 @@ public struct JiebaStyleAnalyzer {
             let limit = min(n, qend + 20)
             while pe < limit && !postStop.contains(chars[pe]) { pe += 1 }
             let post = String(chars[qend..<pe]).trimmingCharacters(in: .whitespaces)
-            // 旁白判定：纯引号包裹且「前面无冒号 + 引号内末尾无标点」的内容（引用/强调/书名/心理描写）
-            // 一律用旁白音色，不分配给任何角色。
-            // 即：只有“有冒号”或“引号内以标点收尾”时才可能是角色台词；两者都没有则判旁白。
+            // 旁白判定（严格只看紧邻的一个字符，不看整句/前文）：
+            // ① 正引号「紧挨着的前一个字符」无冒号（：或 :）；
+            // ② 反引号「紧挨着的前一个字符」无任何标点。
+            // 两者同时成立 → 纯引号包裹的引用/强调/书名/心理描写 → 旁白音色，不切角色。
+            // 反过来：紧邻有冒号 或 紧邻有标点 → 才可能是角色台词。
             let openHasColon = i > 0 && (chars[i - 1] == "：" || chars[i - 1] == ":")
-            let closingPunct: Set<Character> = ["。","！","？","!","?","；",";","，",",","、","：",":","…","—","－","·"]
-            let innerEndsWithPunct = j > start && closingPunct.contains(chars[j - 1])
+            let innerEndsWithPunct = j > start && Self.isPunctuation(chars[j - 1])
             let hasColon = openHasColon || innerEndsWithPunct
             res.append(Dialogue(pre: pre, post: post, text: qtext, hasColon: hasColon,
                                 quoteStart: i, quoteEnd: qend))
