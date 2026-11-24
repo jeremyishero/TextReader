@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreLogic
 import MediaPlayer
+import UIKit
 
 /// 声音预听器：独立于播放器的合成器实例，用于「选定前先试听这个声音」。
 /// 全局共享单例，避免与朗读播放互相打断。
@@ -102,6 +103,14 @@ final class TTSPlayer: NSObject, ObservableObject {
     var onCloudFallback: (() -> Void)?
 
     private let synth = AVSpeechSynthesizer()
+
+    /// 后台看门狗：切后台后 AVSpeech 的 didFinish 回调可能不触发（iOS 已知问题），
+    /// 导致读完一段后流水线停住、无音频输出→App 被系统杀。每 3 秒检查一次：
+    /// 若逻辑上在播放但既无系统声、也无音频播放器在发声，连续 2 次判定卡住→主动推进下一段。
+    private var watchdogTask: Task<Void, Never>?
+    private var stalledCount = 0
+    /// 后台保活任务：audio 后台模式虽允许播放，但申请后台任务可降低被系统挂起/回收的概率。
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var segments: [SpeechSegment] = []
     private var plainChunks: [String] = []
     private var roleVoices: [String: AVSpeechSynthesisVoice] = [:]
@@ -237,6 +246,35 @@ final class TTSPlayer: NSObject, ObservableObject {
                 }
             }
         }
+        startWatchdog()
+    }
+
+    /// 看门狗：持续检查「逻辑在播放但无实际发声」的卡住状态（后台 AVSpeech didFinish 失效）。
+    /// 连续 2 次（6 秒）判定无声就主动重新朗读当前段，保证后台音频不断、App 不被系统回收。
+    private func startWatchdog() {
+        watchdogTask = Task { @MainActor [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                // 仅后台需要看门狗：前台 didFinish 可靠，且避免误判打断正常朗读
+                guard self.isPlaying, !self.isSceneActive else { self.stalledCount = 0; continue }
+                // 有任意一种发声在进行就视为正常
+                if self.synth.isSpeaking || (self.audioPlayer?.isPlaying ?? false) {
+                    self.stalledCount = 0
+                    continue
+                }
+                // 逻辑在播却无声：累计计数，连续 4 次（12 秒）才判定卡住，避免段间间隙误判
+                self.stalledCount += 1
+                if self.stalledCount >= 4 {
+                    self.stalledCount = 0
+                    AppLogger.log("看门狗：后台无声卡住 idx=\(self.currentIndex) → 重新朗读本段")
+                    if let raw = self.currentText() {
+                        self.synth.stopSpeaking(at: .immediate)
+                        self.forceSpeakSystem(raw: raw, idx: self.currentIndex)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: 声音配置
@@ -358,10 +396,30 @@ final class TTSPlayer: NSObject, ObservableObject {
         isSceneActive = active
         if active {
             AppLogger.log("回到前台：恢复预取 isPlaying=\(isPlaying) idx=\(currentIndex)")
+            endBackgroundTask()
             if isPlaying { prefetch(from: currentIndex + 1) }
         } else {
             AppLogger.log("进入后台：暂停新合成 isPlaying=\(isPlaying) idx=\(currentIndex)")
+            beginBackgroundTask()
         }
+    }
+
+    private func beginBackgroundTask() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "TextReader 后台朗读") { [weak self] in
+            // 系统即将回收：结束旧任务并重新申请，争取更多时间（朗读是合法 audio 后台用途）
+            guard let self else { return }
+            AppLogger.log("后台任务即将到期，续期")
+            self.endBackgroundTask()
+            self.beginBackgroundTask()
+        }
+        AppLogger.log("后台保活任务已申请")
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     // MARK: 播放控制
