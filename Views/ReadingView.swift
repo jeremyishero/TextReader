@@ -217,6 +217,9 @@ struct ReadingView: View {
                 // setSceneActive(false) 让后续预取只走系统声；已合成好的音频在 prepared 缓存里正常播。
                 saveProgressNow()
                 player.setSceneActive(false)
+                // 关键：递增合成代次，让切后台瞬间已排队但未开始的合成任务跳过。
+                // 真机日志证实这些残留任务在后台逐个跑 25-45 秒，是 App 被强杀的直接原因。
+                OfflineTTSManager.shared.pauseSynthesis()
                 OfflineTTSManager.shared.releaseIdleEngines(reason: "进入后台")
             } else {
                 // inactive（临时失活，如控制中心上拉）：只落盘，不改合成状态

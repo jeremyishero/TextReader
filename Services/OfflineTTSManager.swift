@@ -163,6 +163,29 @@ final class OfflineTTSManager: ObservableObject {
     private let fm = FileManager.default
     private let engineQueue = DispatchQueue(label: "offline.tts.engine")   // 引擎加载/合成串行
     private var engines: [String: OpaquePointer] = [:]
+
+    /// 合成代次：进后台时 +1，让已排队但未开始的合成任务识别为过期并跳过。
+    /// 真机日志证实：切后台瞬间队列里已排了多个合成（预取窗口 8），DispatchQueue 不可取消，
+    /// 这些任务在后台逐个跑 2-45 秒，持续烧 CPU 直到 App 被强杀。代次机制是唯一能在
+    /// 不取消队列的前提下阻止它们的办法（C 层合成也无中断 API）。
+    private let generationLock = NSLock()
+    private var synthesisGeneration: Int = 0
+
+    /// 当前代次（线程安全读取）。合成任务提交时捕获，执行时比对。
+    private var currentGeneration: Int {
+        generationLock.lock(); defer { generationLock.unlock() }
+        return synthesisGeneration
+    }
+
+    /// 进后台调用：立即递增代次（不能进 engineQueue——那会排在排队合成之后，来不及）。
+    /// 排队中的合成任务执行时会比对代次，不匹配就跳过，从而停止后台的无用合成。
+    func pauseSynthesis() {
+        generationLock.lock()
+        synthesisGeneration += 1
+        let g = synthesisGeneration
+        generationLock.unlock()
+        AppLogger.log("合成代次+\(g)：排队合成将跳过")
+    }
     /// 引擎 LRU：键的最近使用顺序（末尾=最新），用于内存封顶。
     /// 每个引擎实例常驻约 40MB+；不设上限时多个角色加载多个包会累积到被 iOS Jetsam 杀掉
     /// （后台无崩溃日志地退出）。上限 2 个实例 ≈ 80MB——后台内存预算低，必须更保守。
@@ -521,6 +544,7 @@ final class OfflineTTSManager: ObservableObject {
         // 磁盘扫描在进入 engineQueue 之前完成，并把纯值数组带进后台队列；
         // 后台串行合成队列不做任何文件遍历/锁操作，避免阻塞预取流水线造成无声。
         let installedIds = installedPacks().map(\.id)
+        let gen = currentGeneration
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
                 // 合成产生大量临时 Data/数组 + C 层推理内存；无 autoreleasepool 时这些
@@ -528,6 +552,8 @@ final class OfflineTTSManager: ObservableObject {
                 // ——表现即「听着听着 App 自动退出」。每段合成结束立即 drain。
                 autoreleasepool {
                     guard let self else { cont.resume(returning: nil); return }
+                    // 进后台后代次变化 → 排队合成已过期，跳过
+                    guard self.currentGeneration == gen else { cont.resume(returning: nil); return }
                     let plan = self.assign(characterId: characterId, gender: gender,
                                            packGenders: packGenders, installedIds: installedIds,
                                            maleSIDs: maleSIDs, femaleSIDs: femaleSIDs)
@@ -551,10 +577,13 @@ final class OfflineTTSManager: ObservableObject {
     func synthesizeWithPack(text: String, packId: String, sid: Int32, speed: Float) async -> Data? {
         guard !text.isEmpty, isInstalled(packId) else { return nil }
         let dir = packDir(packId).path
+        let gen = currentGeneration
         return await withCheckedContinuation { cont in
             engineQueue.async { [weak self] in
                 autoreleasepool {
                     guard let self else { cont.resume(returning: nil); return }
+                    // 进后台后代次变化 → 本任务已过期，跳过合成（避免后台烧 CPU 被杀）
+                    guard self.currentGeneration == gen else { cont.resume(returning: nil); return }
                     let data = self.synthWithFallback(text: text, packId: packId, dir: dir, sid: sid, speed: speed)
                     cont.resume(returning: data)
                 }

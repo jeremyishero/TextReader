@@ -136,9 +136,10 @@ final class TTSPlayer: NSObject, ObservableObject {
     /// 进行中的预取任务（索引 → Task）。
     private var prepTasks: [Int: Task<PreparedUnit?, Never>] = [:]
     /// 预取窗口：当前段播放时预合成其后多少段。
-    /// 引擎串行、单段合成可达 10-20 秒（真机日志实测），窗口太小会让合成永远跟不上朗读；
-    /// 取 8：前台边读边备货，给合成足够提前量，稳态下后续段能命中离线音色。
-    private let prefetchDepth = 8
+    /// 引擎串行、单段可达 10-45 秒（真机日志实测）。窗口越大，切后台瞬间排队未完成的
+    /// 合成越多——这些残留任务曾导致后台持续烧 CPU 被强杀。取 3：兼顾前台音色命中
+    /// 与「切后台时最多 2-3 个残留」，配合 OfflineTTSManager 的合成代次跳过机制。
+    private let prefetchDepth = 3
 
     /// 前台/后台标志：进后台后禁止启动新的离线/云端合成。
     /// 真机日志证实：后台合成被 iOS CPU 节流拖到 20 秒/段，持续占用导致 App 被强杀；
