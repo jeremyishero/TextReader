@@ -644,10 +644,10 @@ final class TTSPlayer: NSObject, ObservableObject {
     private func prefetch(from start: Int) {
         let total = totalCount()
         guard isPlaying, start < total else { return }
-        // 后台：完全不创建预取任务（连系统声单元都不预建），杜绝任何引擎/合成交互——
-        // 真机日志证实后台合成是 App 被强杀的直接诱因。回前台会重新 prefetch 补货。
-        guard isSceneActive else { return }
-        let end = min(start + prefetchDepth, total)
+        // 后台仍创建预取任务：buildPrepared 在后台会先查磁盘缓存（命中即离线音色），
+        // 未命中才走系统声、绝不启动新合成。后台窗口缩小到 2，减少磁盘 IO 与内存占用。
+        let depth = isSceneActive ? prefetchDepth : 2
+        let end = min(start + depth, total)
         for i in start..<end {
             if prepared[i] == nil && prepTasks[i] == nil {
                 prepTasks[i] = prepTask(for: i)
@@ -658,9 +658,21 @@ final class TTSPlayer: NSObject, ObservableObject {
         for k in toRemove { prepared.removeValue(forKey: k) }
     }
 
-    /// 构建某索引的待播单元：离线语音包 → 云端 TTS → 系统 AVSpeech（依次回退）。
-    /// 离线/云端合成在引擎/网络线程进行，不阻塞主线程；多个预取任务并行推进，
-    /// 形成「四个进程交替解析朗读」的效果，消除逐段等待的卡顿。
+    /// 当前音色签名（在主线程读取所有音色状态，生成缓存 key 的一部分）。
+    /// 音色设置一变，签名变 → 旧缓存自动失效，不会用到旧声音。
+    private var voiceSignature: String {
+        AudioCache.voiceSignature(
+            documentId: currentDocumentId,
+            mode: mode == .segments ? "seg" : "plain",
+            manualPacks: manualOfflinePacks,
+            manualSystemIds: manualSystemVoiceIds,
+            defaultVoice: defaultVoice?.identifier,
+            rate: rate
+        )
+    }
+
+    /// 构建某索引的待播单元：磁盘缓存 → 离线语音包 → 云端 TTS → 系统 AVSpeech。
+    /// 命中磁盘缓存直接播放（零合成），这是消除重复合成与后台退出的核心。
     private func buildPrepared(_ idx: Int) async -> PreparedUnit? {
         let text: String
         let segId: String
@@ -682,22 +694,32 @@ final class TTSPlayer: NSObject, ObservableObject {
         if !segId.isEmpty, manualSystemVoiceIds.contains(segId) {
             return .utterance(buildUtterance(for: idx, text: processed))
         }
-        // 后台：绝不启动新的离线/云端合成。真机日志证实后台合成被 CPU 节流拖到 20 秒/段，
-        // 持续占用会让 App 被系统强杀；且合成结果因段早已读完而用不上。后台只播系统声。
+        // ① 查磁盘缓存——前台/后台都查。读磁盘几乎不耗 CPU，后台仍能用已合成过的离线音色，
+        //    这是「合成一次、永久复用」的闭环，避免每次重新合成（用户明确指出的问题）。
+        let sig = voiceSignature
+        if let cached = AudioCache.shared.data(documentId: currentDocumentId, text: processed, voiceSig: sig) {
+            return .audio(cached, fallback: processed, notice: nil)
+        }
+        // ② 缓存未命中 + 后台：绝不启动新合成（真机日志证实后台合成被 CPU 节流拖到 20 秒/段、
+        //    持续占用会被系统强杀），走系统声；回前台或下次再读时缓存仍在。
         guard isSceneActive else {
             return .utterance(buildUtterance(for: idx, text: processed))
         }
+        // ③ 前台未命中：合成（手动离线包 → 自动离线包 → 云端），成功即写入磁盘缓存。
         // 手工指定离线包：在 @MainActor 上下文读取映射，合成闭包只接收值类型参数，
         // 避免 offlineProvider 闭包跨 actor 读取播放器状态造成预取任务挂起。
         if !segId.isEmpty, let manual = manualOfflinePacks[segId],
            let synth = manualOfflineSynth,
            let data = await synth(processed, manual.packId, manual.sid, rate) {
+            AudioCache.shared.store(documentId: currentDocumentId, text: processed, voiceSig: sig, data: data)
             return .audio(data, fallback: processed, notice: nil)
         }
         if let offlineProvider, let data = await offlineProvider(processed, gender, segId) {
+            AudioCache.shared.store(documentId: currentDocumentId, text: processed, voiceSig: sig, data: data)
             return .audio(data, fallback: processed, notice: "离线语音包合成失败，已回退")
         }
         if let cloudProvider, let data = await cloudProvider(processed) {
+            AudioCache.shared.store(documentId: currentDocumentId, text: processed, voiceSig: sig, data: data)
             return .audio(data, fallback: processed, notice: nil)
         }
         return .utterance(buildUtterance(for: idx, text: processed))
