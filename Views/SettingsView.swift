@@ -221,16 +221,6 @@ struct SettingsView: View {
                     Toggle("启用离线语音包朗读", isOn: $settings.offlineTTSEnabled)
                     Text("下载到手机本地，完全离线合成，优先级高于云端 TTS。模型来自 sherpa-onnx 社区开放模型（国内经 hf-mirror 镜像下载）。")
                         .font(.caption).foregroundColor(.secondary)
-                    Toggle("未播放时自动预合成后续内容", isOn: $settings.autoPreSynthEnabled)
-                    if settings.autoPreSynthEnabled {
-                        Picker("预合成段数", selection: $settings.autoPreSynthCount) {
-                            Text("10 段").tag(10)
-                            Text("30 段").tag(30)
-                            Text("100 段").tag(100)
-                        }
-                        Text("空闲时把当前进度之后的段落提前合成并存缓存，播放时零等待、直接用离线音色。仅前台进行；开始播放或切到后台会暂停。合成较耗时、会耗电。缓存上限 150MB。")
-                            .font(.caption).foregroundColor(.secondary)
-                    }
                     if let diag = offlineMgr.lastOfflineError {
                         Text("⚠️ 离线合成诊断：" + diag)
                             .font(.caption)

@@ -201,11 +201,7 @@ struct ReadingView: View {
             player.readingViewBookId = item.id.uuidString
             player.openTOCHandler = { showTOC = true }
             player.startPlaybackHandler = { idx in self.startPlayback(from: idx) }
-            maybeAutoPreSynthesize()
         }
-        .onChange(of: settings.autoPreSynthEnabled) { _ in maybeAutoPreSynthesize() }
-        .onChange(of: settings.autoPreSynthCount) { _ in maybeAutoPreSynthesize() }
-        .onChange(of: analysis?.segments.count) { _ in maybeAutoPreSynthesize() }
         .onChange(of: scenePhase) { phase in
             // 记录生命周期：区分「被系统杀掉（冷启动）」与「中断暂停（热恢复）」
             AppLogger.log("scenePhase=\(phase) isPlaying=\(player.isPlaying) idx=\(player.currentSegmentIndex)")
@@ -214,7 +210,6 @@ struct ReadingView: View {
                 // （之前 AVAudioSession 中断 .ended 里无条件 continueSpeaking 导致「重进又读」，已在 TTSPlayer 修正）
                 player.setSceneActive(true)
                 syncHighlightNow()
-                maybeAutoPreSynthesize()
             } else if phase == .background {
                 // 进后台：落盘进度；不 stop 播放器，让音频会话在后台继续（audio 后台模式）。
                 // 关键（真机日志证实）：后台必须停止新合成——iOS CPU 节流把 VITS 推理拖到 20 秒/段，
@@ -313,41 +308,6 @@ struct ReadingView: View {
         }
     }
 
-    // MARK: 自动预合成（未播放时）
-
-    /// 开关打开且当前未在播放时，把「当前进度之后 N 段」静默合成为音频缓存。
-    /// 只在前台进行（进后台仍停合成，保证不退出）；播放一开始立即让位。
-    private func maybeAutoPreSynthesize() {
-        guard settings.autoPreSynthEnabled, settings.offlineTTSEnabled,
-              !player.isPlaying, scenePhase == .active else { return }
-        // 解析模式下按 analysis.segments，普通模式按 TextChunker 分块
-        let allUnits: [(text: String, characterId: String, gender: Gender)] = {
-            if player.useAnalyzedPlayback, let a = analysis, !a.segments.isEmpty {
-                var genderById: [String: Gender] = [:]
-                for r in a.roles { genderById[r.id] = r.gender }
-                return a.segments.map { seg in
-                    let cid = seg.characterId ?? ""
-                    return (seg.text, cid, genderById[cid] ?? .neutral)
-                }
-            }
-            return TextChunker().chunk(text).map { ($0, "", Gender.neutral) }
-        }()
-        guard !allUnits.isEmpty else { return }
-        // 起点：当前进度段（保存的 segmentIndex），往后 N 段
-        let start = max(0, min(currentProgress?.segmentIndex ?? 0, allUnits.count - 1))
-        let end = min(start + settings.autoPreSynthCount, allUnits.count)
-        let batch = Array(allUnits[start..<end])
-        let docId = item.id.uuidString
-        preSynthTask?.cancel()
-        preSynthTask = Task { @MainActor in
-            await player.preSynthesize(batch, documentId: docId) {
-                // 播放开始 / 进后台 / 页面离开 → 停止预合成
-                self.player.isPlaying || self.scenePhase != .active
-            }
-        }
-    }
-
-    @State private var preSynthTask: Task<Void, Never>? = nil
 
     // MARK: 数据加载
 
@@ -387,7 +347,6 @@ struct ReadingView: View {
         }
         // 若朗读仍在进行（如从后台/锁屏返回），立即把高亮同步到当前位置
         syncHighlightNow()
-        maybeAutoPreSynthesize()
     }
 
     /// 章节检测：短段落且以「第X章/回/卷/节」开头

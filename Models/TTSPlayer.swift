@@ -739,48 +739,6 @@ final class TTSPlayer: NSObject, ObservableObject {
         )
     }
 
-    /// 未播放时预合成后续段落到磁盘缓存（自动预合成开关用）。
-    /// 逐段：命中缓存跳过 → 否则用当前音色合成 → 写缓存。每段之间让出，播放一开始立即停止。
-    /// - Parameters:
-    ///   - units: 待合成的段 (文本, 角色id, 性别)
-    ///   - shouldStop: 返回 true 时立即中止（播放开始/进后台），闭包在主线程调用
-    func preSynthesize(_ units: [(text: String, characterId: String, gender: Gender)],
-                       documentId: String,
-                       shouldStop: @escaping @MainActor () -> Bool) async {
-        let sig = AudioCache.voiceSignature(
-            documentId: documentId,
-            mode: mode == .segments ? "seg" : "plain",
-            manualPacks: manualOfflinePacks,
-            manualSystemIds: manualSystemVoiceIds,
-            roleSlots: roleSlotVoices,
-            defaultVoice: defaultVoice?.identifier,
-            rate: rate
-        )
-        let docId: String? = documentId
-        for unit in units {
-            if await shouldStop() { break }
-            let processed = applyCustomRules(unit.text)
-            // 已缓存则跳过
-            if AudioCache.shared.data(documentId: docId, text: processed, voiceSig: sig) != nil { continue }
-            // 手工指定系统声的角色无需预合成（系统声不走缓存）
-            if !unit.characterId.isEmpty, manualSystemVoiceIds.contains(unit.characterId) { continue }
-            var data: Data?
-            if !unit.characterId.isEmpty, let manual = manualOfflinePacks[unit.characterId],
-               let synth = manualOfflineSynth {
-                data = await synth(processed, manual.packId, manual.sid, rate)
-            }
-            if data == nil, let offlineProvider {
-                data = await offlineProvider(processed, unit.gender, unit.characterId)
-            }
-            if let data {
-                AudioCache.shared.store(documentId: docId, text: processed, voiceSig: sig, data: data)
-            }
-            // 让出主线程一步，避免长时间占用
-            await Task.yield()
-        }
-        AppLogger.log("预合成任务结束（处理 \(units.count) 段）")
-    }
-
     /// 构建某索引的待播单元：磁盘缓存 → 离线语音包 → 云端 TTS → 系统 AVSpeech。
     /// 命中磁盘缓存直接播放（零合成），这是消除重复合成与后台退出的核心。
     private func buildPrepared(_ idx: Int) async -> PreparedUnit? {
